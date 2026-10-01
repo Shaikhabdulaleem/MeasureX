@@ -1,10 +1,11 @@
 include: package:flutter_lints/flutter.yaml
 
 analyzer:
-  errors:
-    # Generated localization files are not linted.
+  # Generated localization files are not linted.
   exclude:
     - lib/src/l10n/app_localizations*.dart
+    - build/**
+    - android/**
 
 linter:
   rules:

@@ -3,7 +3,7 @@ import 'package:uuid/uuid.dart';
 import '../../core/api_client.dart';
 import '../auth/auth_controller.dart';
 
-final _uuid = Uuid();
+const _uuid = Uuid();
 
 /// A package saved during the current capture session (for the summary screen).
 class CaptureState {

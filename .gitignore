@@ -52,3 +52,6 @@ Thumbs.db
 *.log
 npm-debug.log*
 pnpm-debug.log*
+
+# Flutter SDK accidentally placed inside the repo (do not commit)
+/flutter/
