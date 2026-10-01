@@ -1,0 +1,41 @@
+# Local development infrastructure for MeasureX.
+# Postgres 16 (primary datastore) + Redis 7 (BullMQ background jobs).
+# Not for production — the Saudi-region managed services are configured in
+# deployment (PRD A9). Copy .env.example to .env to override defaults.
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: measurex-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-measurex}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-measurex}
+      POSTGRES_DB: ${POSTGRES_DB:-measurex}
+    ports:
+      - '${POSTGRES_PORT:-5432}:5432'
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-measurex}']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: measurex-redis
+    restart: unless-stopped
+    ports:
+      - '${REDIS_PORT:-6379}:6379'
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+  redis_data:

@@ -1,0 +1,7 @@
+{
+  "name": "@measurex/api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MeasureX backend API (NestJS). Skeleton — implemented from M0 onward.",
+  "scripts": {}
+}

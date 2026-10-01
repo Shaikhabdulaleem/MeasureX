@@ -1,0 +1,7 @@
+{
+  "name": "@measurex/web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MeasureX web dashboard (Next.js). Skeleton — implemented from M4 onward.",
+  "scripts": {}
+}

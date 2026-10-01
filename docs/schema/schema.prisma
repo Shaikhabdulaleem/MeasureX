@@ -1,0 +1,515 @@
+// MeasureX data model — PostgreSQL via Prisma.
+// Source of truth: docs/PRD.md §12 (and state machines in §8).
+//
+// Conventions (see CLAUDE.md "Never break these rules"):
+//   - UUID primary keys.
+//   - createdAt / updatedAt on every table.
+//   - Soft delete only (deletedAt), never hard delete.
+//   - Base units are INTEGERS: dimensions in millimetres, weight in grams.
+//   - No consignee personal data in any table (name / phone / address).
+//   - Displayed package values always come from measurement_version
+//     (current_version_id); versions are immutable.
+//
+// This is a design artifact under docs/. It is copied into apps/api and wired
+// to a datasource + generator when backend work begins (M0 "done when" only
+// requires the schema + formulas + CI, not a running API).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum Role {
+  labour
+  team_leader
+  admin
+}
+
+enum BranchStatus {
+  active
+  inactive
+}
+
+enum DeviceTier {
+  standard
+  ar
+  unsupported
+}
+
+enum ScaleConnection {
+  ble
+  classic
+  hid
+}
+
+enum ShipmentStatus {
+  in_progress
+  completed
+  remeasure_required
+}
+
+enum PackageStatus {
+  active
+  superseded
+  void
+}
+
+enum WeightSource {
+  scale
+  manual
+  none
+}
+
+enum MeasurementMethod {
+  marker
+  ar
+  manual
+}
+
+enum Confidence {
+  high
+  medium
+  low
+}
+
+enum PhotoKind {
+  raw
+  annotated
+}
+
+enum RemeasureStatus {
+  open
+  done
+  cancelled
+}
+
+enum RemeasureReason {
+  low_confidence
+  incorrect_dimensions
+  bad_photo
+  device_issue
+  customer_dispute
+  manual_verification
+  other
+}
+
+enum FlagStatus {
+  open
+  resolved
+  dismissed
+}
+
+/// Flag types. `weight_discrepancy` and `check_dimensions` only fire once an
+/// Aymakan integration supplies declared values (Phase C); the rest apply now.
+enum FlagType {
+  low_confidence
+  medium_confidence
+  manual_entry
+  manual_weight
+  weight_discrepancy
+  check_dimensions
+  possible_duplicate
+  worker_flag
+}
+
+enum ConfigScope {
+  global
+  client
+  branch
+}
+
+/// Mobile-side sync state per package (PRD §8). Stored on the device; the
+/// server mirrors terminal states it is told about. Kept here so the shared
+/// model is complete.
+enum SyncStatus {
+  pending
+  syncing
+  synced
+  failed
+  conflict
+}
+
+// ---------------------------------------------------------------------------
+// Core reference tables
+// ---------------------------------------------------------------------------
+
+model Branch {
+  id        String       @id @default(uuid()) @db.Uuid
+  code      String       @unique
+  name      String
+  status    BranchStatus @default(active)
+  createdAt DateTime     @default(now()) @map("created_at")
+  updatedAt DateTime     @updatedAt @map("updated_at")
+  deletedAt DateTime?    @map("deleted_at")
+
+  users     User[]
+  stations  Station[]
+  shipments Shipment[]
+
+  @@map("branch")
+}
+
+/// Aymakan's shipper customers (e.g. Arabian Oud). Unused until shipments carry
+/// a client (post-integration); kept nullable everywhere it is referenced.
+model Client {
+  id                String    @id @default(uuid()) @db.Uuid
+  code              String    @unique
+  name              String
+  aymakanAccountNo  String?   @map("aymakan_account_no")
+  volumetricDivisor Int?      @map("volumetric_divisor")
+  status            BranchStatus @default(active)
+  createdAt         DateTime  @default(now()) @map("created_at")
+  updatedAt         DateTime  @updatedAt @map("updated_at")
+  deletedAt         DateTime? @map("deleted_at")
+
+  shipments Shipment[]
+
+  @@map("client")
+}
+
+model User {
+  id                 String    @id @default(uuid()) @db.Uuid
+  employeeId         String    @unique @map("employee_id")
+  name               String
+  role               Role
+  homeBranchId       String    @map("home_branch_id") @db.Uuid
+  /// For admins: list of branch ids in scope, or ["all"]. Null for non-admins.
+  adminScope         Json?     @map("admin_scope")
+  passwordHash       String    @map("password_hash")
+  mustChangePassword Boolean   @default(true) @map("must_change_password")
+  failedLogins       Int       @default(0) @map("failed_logins")
+  lockedUntil        DateTime? @map("locked_until")
+  status             BranchStatus @default(active)
+  createdAt          DateTime  @default(now()) @map("created_at")
+  updatedAt          DateTime  @updatedAt @map("updated_at")
+  deletedAt          DateTime? @map("deleted_at")
+
+  homeBranch          Branch               @relation(fields: [homeBranchId], references: [id])
+  packagesMeasured    Package[]            @relation("PackageMeasuredBy")
+  devicesLastUsed     Device[]             @relation("DeviceLastUser")
+  measurementVersions MeasurementVersion[] @relation("VersionCreatedBy")
+  remeasuresRequested RemeasureRequest[]   @relation("RemeasureRequestedBy")
+  remeasuresDone      RemeasureRequest[]   @relation("RemeasureDoneBy")
+  flagsResolved       Flag[]               @relation("FlagResolvedBy")
+  events              MeasurementEvent[]
+  auditEntries        AuditLog[]
+  configUpdates       Config[]
+
+  @@index([homeBranchId])
+  @@map("user")
+}
+
+model Station {
+  id           String    @id @default(uuid()) @db.Uuid
+  code         String    @unique
+  branchId     String    @map("branch_id") @db.Uuid
+  matSizeMm    Int       @map("mat_size_mm")
+  markerSizeMm Int       @map("marker_size_mm")
+  scaleId      String?   @map("scale_id") @db.Uuid
+  createdAt    DateTime  @default(now()) @map("created_at")
+  updatedAt    DateTime  @updatedAt @map("updated_at")
+  deletedAt    DateTime? @map("deleted_at")
+
+  branch   Branch    @relation(fields: [branchId], references: [id])
+  scale    Scale?    @relation(fields: [scaleId], references: [id])
+  packages Package[]
+
+  @@index([branchId])
+  @@map("station")
+}
+
+model Scale {
+  id         String          @id @default(uuid()) @db.Uuid
+  model      String
+  connection ScaleConnection
+  adapterKey String          @map("adapter_key")
+  approved   Boolean         @default(false)
+  createdAt  DateTime        @default(now()) @map("created_at")
+  updatedAt  DateTime        @updatedAt @map("updated_at")
+  deletedAt  DateTime?       @map("deleted_at")
+
+  stations            Station[]
+  measurementVersions MeasurementVersion[]
+
+  @@map("scale")
+}
+
+model Device {
+  id           String     @id @default(uuid()) @db.Uuid
+  installId    String     @unique @map("install_id")
+  manufacturer String?
+  model        String?
+  os           String?
+  osVersion    String?    @map("os_version")
+  tier         DeviceTier
+  lastUserId   String?    @map("last_user_id") @db.Uuid
+  lastSeenAt   DateTime?  @map("last_seen_at")
+  blocked      Boolean    @default(false)
+  createdAt    DateTime   @default(now()) @map("created_at")
+  updatedAt    DateTime   @updatedAt @map("updated_at")
+  deletedAt    DateTime?  @map("deleted_at")
+
+  lastUser User?              @relation("DeviceLastUser", fields: [lastUserId], references: [id])
+  packages Package[]
+  events   MeasurementEvent[]
+  auditEntries AuditLog[]
+
+  @@index([lastUserId])
+  @@map("device")
+}
+
+// ---------------------------------------------------------------------------
+// Shipments, packages, versions
+// ---------------------------------------------------------------------------
+
+model Shipment {
+  id             String         @id @default(uuid()) @db.Uuid
+  awb            String         @unique
+  branchId       String?        @map("branch_id") @db.Uuid
+  // Nullable integration fields — unused until Aymakan is connected (Phase C).
+  clientId       String?        @map("client_id") @db.Uuid
+  expectedPieces Int?           @map("expected_pieces")
+  declaredWeightG Int?          @map("declared_weight_g")
+  origin         String?
+  destination    String?
+  clientRef      String?        @map("client_ref")
+  status         ShipmentStatus @default(in_progress)
+  flags          FlagType[]     @default([])
+  // Denormalised totals = sum of active packages, recomputed on every change.
+  totalPieces     Int           @default(0) @map("total_pieces")
+  totalCbm        Decimal       @default(0) @map("total_cbm") @db.Decimal(14, 4)
+  totalActualG    Int           @default(0) @map("total_actual_g")
+  totalVolumetricG Int          @default(0) @map("total_volumetric_g")
+  totalChargeableG Int          @default(0) @map("total_chargeable_g")
+  completedAt    DateTime?      @map("completed_at")
+  createdAt      DateTime       @default(now()) @map("created_at")
+  updatedAt      DateTime       @updatedAt @map("updated_at")
+  deletedAt      DateTime?      @map("deleted_at")
+
+  branch            Branch?            @relation(fields: [branchId], references: [id])
+  client            Client?            @relation(fields: [clientId], references: [id])
+  packages          Package[]
+  remeasureRequests RemeasureRequest[]
+  flagRecords       Flag[]
+
+  @@index([branchId])
+  @@index([status])
+  @@map("shipment")
+}
+
+model Package {
+  // Client-generated UUID (PRD §10): resend never duplicates.
+  id               String        @id @default(uuid()) @db.Uuid
+  shipmentId       String        @map("shipment_id") @db.Uuid
+  // Final server-assigned number; null until the server assigns it.
+  packageNumber    Int?          @map("package_number")
+  // Provisional number shown offline (e.g. "2" rendered as "PKG 02*").
+  provisionalNumber Int?         @map("provisional_number")
+  status           PackageStatus @default(active)
+  currentVersionId String?       @unique @map("current_version_id") @db.Uuid
+  stationId        String?       @map("station_id") @db.Uuid
+  deviceId         String?       @map("device_id") @db.Uuid
+  measuredBy       String?       @map("measured_by") @db.Uuid
+  // Idempotency key accompanying the create (PRD §10, §13).
+  idempotencyKey   String?       @unique @map("idempotency_key")
+  confirmedAt      DateTime?     @map("confirmed_at")
+  syncReceivedAt   DateTime?     @map("sync_received_at")
+  createdAt        DateTime      @default(now()) @map("created_at")
+  updatedAt        DateTime      @updatedAt @map("updated_at")
+  deletedAt        DateTime?     @map("deleted_at")
+
+  shipment       Shipment             @relation(fields: [shipmentId], references: [id])
+  station        Station?             @relation(fields: [stationId], references: [id])
+  device         Device?              @relation(fields: [deviceId], references: [id])
+  measuredByUser User?                @relation("PackageMeasuredBy", fields: [measuredBy], references: [id])
+  currentVersion MeasurementVersion?  @relation("PackageCurrentVersion", fields: [currentVersionId], references: [id])
+  versions       MeasurementVersion[] @relation("PackageVersions")
+  photos         Photo[]
+  flags          Flag[]
+
+  @@unique([shipmentId, packageNumber])
+  @@index([shipmentId])
+  @@index([status])
+  @@map("package")
+}
+
+/// Immutable snapshot of a measurement. Corrections and remeasurements create a
+/// new version; versions are never edited or deleted. Billing values here are
+/// the server-computed authoritative figures (PRD §7).
+model MeasurementVersion {
+  id              String            @id @default(uuid()) @db.Uuid
+  packageId       String            @map("package_id") @db.Uuid
+  versionNo       Int               @map("version_no")
+  // Base units (integers).
+  lengthMm        Int               @map("length_mm")
+  widthMm         Int               @map("width_mm")
+  heightMm        Int               @map("height_mm")
+  actualWeightG   Int?              @map("actual_weight_g")
+  weightSource    WeightSource      @default(none) @map("weight_source")
+  scaleId         String?           @map("scale_id") @db.Uuid
+  method          MeasurementMethod
+  confidence      Confidence?
+  confidenceDetail Json?            @map("confidence_detail")
+  divisorUsed     Int               @map("divisor_used")
+  // Billing figures (server is final). Dimensions rounded up to whole cm.
+  billingLCm      Int               @map("billing_l_cm")
+  billingWCm      Int               @map("billing_w_cm")
+  billingHCm      Int               @map("billing_h_cm")
+  cbm             Decimal           @db.Decimal(14, 4)
+  volumetricG     Int               @map("volumetric_g")
+  chargeableG     Int               @map("chargeable_g")
+  createdBy       String?           @map("created_by") @db.Uuid
+  reason          String?
+  createdAt       DateTime          @default(now()) @map("created_at")
+  updatedAt       DateTime          @updatedAt @map("updated_at")
+  deletedAt       DateTime?         @map("deleted_at")
+
+  package       Package  @relation("PackageVersions", fields: [packageId], references: [id])
+  currentOf     Package? @relation("PackageCurrentVersion")
+  scale         Scale?   @relation(fields: [scaleId], references: [id])
+  createdByUser User?    @relation("VersionCreatedBy", fields: [createdBy], references: [id])
+  photos        Photo[]
+
+  @@unique([packageId, versionNo])
+  @@index([packageId])
+  @@map("measurement_version")
+}
+
+model Photo {
+  id         String    @id @default(uuid()) @db.Uuid
+  packageId  String    @map("package_id") @db.Uuid
+  versionId  String?   @map("version_id") @db.Uuid
+  kind       PhotoKind @default(raw)
+  // Object-storage key only; files live in a private bucket, signed URLs only.
+  storageKey String    @map("storage_key")
+  width      Int?
+  height     Int?
+  bytes      Int?
+  createdAt  DateTime  @default(now()) @map("created_at")
+  updatedAt  DateTime  @updatedAt @map("updated_at")
+  deletedAt  DateTime? @map("deleted_at")
+
+  package Package             @relation(fields: [packageId], references: [id])
+  version MeasurementVersion? @relation(fields: [versionId], references: [id])
+
+  @@index([packageId])
+  @@map("photo")
+}
+
+// ---------------------------------------------------------------------------
+// Workflow: remeasurement, flags, events
+// ---------------------------------------------------------------------------
+
+model RemeasureRequest {
+  id          String          @id @default(uuid()) @db.Uuid
+  shipmentId  String          @map("shipment_id") @db.Uuid
+  packageIds  String[]        @map("package_ids") @db.Uuid
+  reason      RemeasureReason
+  note        String?
+  status      RemeasureStatus @default(open)
+  requestedBy String          @map("requested_by") @db.Uuid
+  doneBy      String?         @map("done_by") @db.Uuid
+  closedAt    DateTime?       @map("closed_at")
+  createdAt   DateTime        @default(now()) @map("created_at")
+  updatedAt   DateTime        @updatedAt @map("updated_at")
+  deletedAt   DateTime?       @map("deleted_at")
+
+  shipment        Shipment @relation(fields: [shipmentId], references: [id])
+  requestedByUser User     @relation("RemeasureRequestedBy", fields: [requestedBy], references: [id])
+  doneByUser      User?    @relation("RemeasureDoneBy", fields: [doneBy], references: [id])
+
+  @@index([shipmentId])
+  @@index([status])
+  @@map("remeasure_request")
+}
+
+model Flag {
+  id         String     @id @default(uuid()) @db.Uuid
+  shipmentId String?    @map("shipment_id") @db.Uuid
+  packageId  String?    @map("package_id") @db.Uuid
+  type       FlagType
+  status     FlagStatus @default(open)
+  resolvedBy String?    @map("resolved_by") @db.Uuid
+  note       String?
+  createdAt  DateTime   @default(now()) @map("created_at")
+  updatedAt  DateTime   @updatedAt @map("updated_at")
+  deletedAt  DateTime?  @map("deleted_at")
+
+  shipment       Shipment? @relation(fields: [shipmentId], references: [id])
+  package        Package?  @relation(fields: [packageId], references: [id])
+  resolvedByUser User?     @relation("FlagResolvedBy", fields: [resolvedBy], references: [id])
+
+  @@index([shipmentId])
+  @@index([packageId])
+  @@index([status])
+  @@map("flag")
+}
+
+/// Append-only telemetry powering KPIs (measurement time, retake rate,
+/// first-pass success) and calibration analysis (PRD §12 notes).
+model MeasurementEvent {
+  id         String   @id @default(uuid()) @db.Uuid
+  deviceId   String?  @map("device_id") @db.Uuid
+  userId     String?  @map("user_id") @db.Uuid
+  awb        String?
+  // scan | measure_start | measure_ready | retake | confirm | manual_entry |
+  // scale_stable | ...
+  type       String
+  payload    Json?
+  occurredAt DateTime @map("occurred_at")
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  device Device? @relation(fields: [deviceId], references: [id])
+  user   User?   @relation(fields: [userId], references: [id])
+
+  @@index([awb])
+  @@index([type])
+  @@index([occurredAt])
+  @@map("measurement_event")
+}
+
+/// Audit trail. One row per create / correction / void / reopen / config /
+/// user change — written for every mutation (PRD §14).
+model AuditLog {
+  id       String   @id @default(uuid()) @db.Uuid
+  at       DateTime @default(now())
+  userId   String?  @map("user_id") @db.Uuid
+  role     Role?
+  entity   String
+  entityId String?  @map("entity_id")
+  action   String
+  before   Json?
+  after    Json?
+  reason   String?
+  ip       String?
+  deviceId String?  @map("device_id") @db.Uuid
+
+  user   User?   @relation(fields: [userId], references: [id])
+  device Device? @relation(fields: [deviceId], references: [id])
+
+  @@index([entity, entityId])
+  @@index([at])
+  @@map("audit_log")
+}
+
+model Config {
+  key       String      @id
+  value     Json
+  scope     ConfigScope @default(global)
+  scopeId   String?     @map("scope_id")
+  updatedBy String?     @map("updated_by") @db.Uuid
+  createdAt DateTime    @default(now()) @map("created_at")
+  updatedAt DateTime    @updatedAt @map("updated_at")
+
+  updatedByUser User? @relation(fields: [updatedBy], references: [id])
+
+  @@map("config")
+}

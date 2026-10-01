@@ -1,0 +1,1318 @@
+openapi: 3.1.0
+info:
+  title: MeasureX API
+  version: 1.0.0
+  description: >
+    One REST API serving the MeasureX mobile app, web dashboard and future
+    integrations. Generated from PRD §13.
+
+
+    Conventions:
+      - JWT access token (15 min) + refresh token (12 h shift).
+      - Errors: `{ code, message, details }`.
+      - Cursor pagination on list endpoints.
+      - `Idempotency-Key` header required on every create.
+      - All times are UTC ISO 8601.
+      - Base units are integers: dimensions in mm, weight in g. Billing figures
+        are server-computed and final; the mobile app only shows a preview.
+      - Role + branch checks are enforced server-side on every endpoint.
+servers:
+  - url: https://api.measurex.example/api/v1
+    description: Staging (Saudi region)
+  - url: http://localhost:3000/api/v1
+    description: Local dev
+
+security:
+  - bearerAuth: []
+
+tags:
+  - name: Auth
+  - name: Device
+  - name: Lookup
+  - name: Shipments
+  - name: Packages
+  - name: Photos
+  - name: Sync
+  - name: Events
+  - name: Review
+  - name: Admin
+  - name: Reports
+  - name: Audit
+  - name: Integration
+
+paths:
+  # ---------------------------------------------------------------- Auth
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Log in with Employee ID + password
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/LoginRequest' }
+      responses:
+        '200':
+          description: Tokens issued
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+        '423':
+          description: Account locked (5 failed attempts → 15 min)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Exchange a refresh token for a new access token
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken: { type: string }
+      responses:
+        '200':
+          description: New token pair (refresh rotation)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/TokenPair' }
+        '401': { $ref: '#/components/responses/Unauthorized' }
+
+  /auth/logout:
+    post:
+      tags: [Auth]
+      summary: Revoke the current session
+      responses:
+        '204': { description: Logged out }
+
+  /auth/change-password:
+    post:
+      tags: [Auth]
+      summary: Change password (also clears must_change_password)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [currentPassword, newPassword]
+              properties:
+                currentPassword: { type: string }
+                newPassword: { type: string, minLength: 8 }
+      responses:
+        '204': { description: Password changed }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  # ---------------------------------------------------------------- Device
+  /devices/register:
+    post:
+      tags: [Device]
+      summary: Register a device and record its tier-check result
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/DeviceRegisterRequest' }
+      responses:
+        '200':
+          description: Device record
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Device' }
+
+  /devices/me/config:
+    get:
+      tags: [Device]
+      summary: Effective configuration for this device/user (merged scopes)
+      responses:
+        '200':
+          description: Config bundle
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/EffectiveConfig' }
+
+  # ---------------------------------------------------------------- Lookup
+  /awb/{awb}/lookup:
+    get:
+      tags: [Lookup]
+      summary: Existing MeasureX shipment + packages for an AWB
+      description: Needs connection; used for the cross-device history check.
+      parameters:
+        - $ref: '#/components/parameters/AwbPath'
+      responses:
+        '200':
+          description: Lookup result
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/AwbLookupResult' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  # ---------------------------------------------------------------- Shipments
+  /shipments:
+    get:
+      tags: [Shipments]
+      summary: List shipments (filtered, cursor-paginated)
+      parameters:
+        - { in: query, name: branchId, schema: { type: string, format: uuid } }
+        - { in: query, name: status, schema: { $ref: '#/components/schemas/ShipmentStatus' } }
+        - { in: query, name: dateFrom, schema: { type: string, format: date-time } }
+        - { in: query, name: dateTo, schema: { type: string, format: date-time } }
+        - { in: query, name: confidence, schema: { $ref: '#/components/schemas/Confidence' } }
+        - { in: query, name: method, schema: { $ref: '#/components/schemas/MeasurementMethod' } }
+        - { in: query, name: flag, schema: { $ref: '#/components/schemas/FlagType' } }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Page of shipments
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Shipment' }
+
+  /shipments/{awb}:
+    get:
+      tags: [Shipments]
+      summary: Shipment detail with packages and current versions
+      parameters:
+        - $ref: '#/components/parameters/AwbPath'
+      responses:
+        '200':
+          description: Shipment detail
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShipmentDetail' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
+  /shipments/{awb}/complete:
+    post:
+      tags: [Shipments]
+      summary: Complete a shipment (in_progress → completed)
+      parameters:
+        - $ref: '#/components/parameters/AwbPath'
+      responses:
+        '200':
+          description: Updated shipment
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Shipment' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  /shipments/{awb}/reopen:
+    post:
+      tags: [Shipments]
+      summary: Reopen a completed shipment (reason required). Team Leader/Admin.
+      parameters:
+        - $ref: '#/components/parameters/AwbPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReasonBody' }
+      responses:
+        '200':
+          description: Updated shipment
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Shipment' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '409': { $ref: '#/components/responses/Conflict' }
+
+  # ---------------------------------------------------------------- Packages
+  /shipments/{awb}/packages:
+    post:
+      tags: [Packages]
+      summary: Create a package (idempotent). Server assigns the final number.
+      description: >
+        The body carries base units (mm, g); the server computes all billing
+        figures and the authoritative package number. Re-sending the same
+        client UUID / Idempotency-Key returns the existing package.
+      parameters:
+        - $ref: '#/components/parameters/AwbPath'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/PackageCreate' }
+      responses:
+        '201':
+          description: Package created (or existing, if idempotent replay)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Package' }
+        '200':
+          description: Idempotent replay — existing package returned
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Package' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+
+  /packages/{id}/corrections:
+    post:
+      tags: [Packages]
+      summary: Correct a package (new version, old kept; reason required)
+      description: Team Leader/Admin. Recomputes totals, writes an audit entry.
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/CorrectionCreate' }
+      responses:
+        '201':
+          description: New version created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Package' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  /packages/{id}/void:
+    post:
+      tags: [Packages]
+      summary: Void a package (wrong AWB; reason required). Excluded from totals.
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ReasonBody' }
+      responses:
+        '200':
+          description: Voided package
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Package' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ---------------------------------------------------------------- Photos
+  /packages/{id}/photos:
+    post:
+      tags: [Photos]
+      summary: Request a signed upload URL for a package photo
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [kind, contentType]
+              properties:
+                kind: { $ref: '#/components/schemas/PhotoKind' }
+                contentType: { type: string, example: image/jpeg }
+                bytes: { type: integer }
+      responses:
+        '201':
+          description: Signed upload target
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PhotoUploadTarget' }
+
+  /photos/{id}:
+    get:
+      tags: [Photos]
+      summary: Signed view URL for a photo (view logged; Team Leader/Admin)
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: Signed, short-lived view URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  url: { type: string, format: uri }
+                  expiresAt: { type: string, format: date-time }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ---------------------------------------------------------------- Sync
+  /sync/batch:
+    post:
+      tags: [Sync]
+      summary: Upload up to 50 packages in one batch (idempotent per item)
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [packages]
+              properties:
+                packages:
+                  type: array
+                  maxItems: 50
+                  items: { $ref: '#/components/schemas/PackageCreate' }
+      responses:
+        '200':
+          description: Per-item results (accepted / conflict / error)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  results:
+                    type: array
+                    items: { $ref: '#/components/schemas/SyncItemResult' }
+
+  /sync/status:
+    get:
+      tags: [Sync]
+      summary: Server view of sync state for this device's recent packages
+      parameters:
+        - { in: query, name: deviceId, schema: { type: string, format: uuid } }
+      responses:
+        '200':
+          description: Sync status summary
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  pending: { type: integer }
+                  failed: { type: integer }
+                  conflict: { type: integer }
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/SyncItemResult' }
+
+  # ---------------------------------------------------------------- Events
+  /events/batch:
+    post:
+      tags: [Events]
+      summary: Upload measurement telemetry events (append-only)
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [events]
+              properties:
+                events:
+                  type: array
+                  items: { $ref: '#/components/schemas/MeasurementEvent' }
+      responses:
+        '202': { description: Accepted }
+
+  # ---------------------------------------------------------------- Review
+  /flags:
+    get:
+      tags: [Review]
+      summary: List flags for the review queue
+      parameters:
+        - { in: query, name: branchId, schema: { type: string, format: uuid } }
+        - { in: query, name: type, schema: { $ref: '#/components/schemas/FlagType' } }
+        - { in: query, name: status, schema: { $ref: '#/components/schemas/FlagStatus' } }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Page of flags
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/Flag' }
+
+  /flags/{id}/resolve:
+    post:
+      tags: [Review]
+      summary: Resolve or dismiss a flag (note optional)
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [resolved, dismissed]
+                note: { type: string }
+      responses:
+        '200':
+          description: Updated flag
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Flag' }
+
+  /remeasurements:
+    post:
+      tags: [Review]
+      summary: Request a remeasurement (reason required). Team Leader/Admin.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/RemeasureCreate' }
+      responses:
+        '201':
+          description: Request created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RemeasureRequest' }
+
+  /remeasurements/{id}/cancel:
+    post:
+      tags: [Review]
+      summary: Cancel an open remeasurement request
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: Cancelled request
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RemeasureRequest' }
+
+  # ---------------------------------------------------------------- Admin CRUD
+  /users:
+    get:
+      tags: [Admin]
+      summary: List users
+      parameters:
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200': { $ref: '#/components/responses/UserPage' }
+    post:
+      tags: [Admin]
+      summary: Create a user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserCreate' }
+      responses:
+        '201': { $ref: '#/components/responses/UserOk' }
+  /users/{id}:
+    parameters:
+      - $ref: '#/components/parameters/IdPath'
+    patch:
+      tags: [Admin]
+      summary: Update a user (edit, reset password, unlock)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UserUpdate' }
+      responses:
+        '200': { $ref: '#/components/responses/UserOk' }
+    delete:
+      tags: [Admin]
+      summary: Soft-delete a user
+      responses:
+        '204': { description: Deleted }
+
+  /branches:
+    get:
+      tags: [Admin]
+      summary: List branches
+      responses:
+        '200':
+          description: Branches
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Branch' } }
+    post:
+      tags: [Admin]
+      summary: Create a branch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Branch' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Branch' }
+  /branches/{id}:
+    parameters: [ { $ref: '#/components/parameters/IdPath' } ]
+    patch:
+      tags: [Admin]
+      summary: Update a branch
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Branch' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Branch' }
+
+  /clients:
+    get:
+      tags: [Admin]
+      summary: List clients (unused until integration)
+      responses:
+        '200':
+          description: Clients
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Client' } }
+    post:
+      tags: [Admin]
+      summary: Create a client
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Client' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Client' }
+  /clients/{id}:
+    parameters: [ { $ref: '#/components/parameters/IdPath' } ]
+    patch:
+      tags: [Admin]
+      summary: Update / deactivate a client
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Client' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Client' }
+
+  /stations:
+    get:
+      tags: [Admin]
+      summary: List stations
+      responses:
+        '200':
+          description: Stations
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Station' } }
+    post:
+      tags: [Admin]
+      summary: Create a station (print mat afterwards)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Station' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Station' }
+  /stations/{id}:
+    parameters: [ { $ref: '#/components/parameters/IdPath' } ]
+    patch:
+      tags: [Admin]
+      summary: Update a station
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Station' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Station' }
+
+  /scales:
+    get:
+      tags: [Admin]
+      summary: List scales (approved-model list)
+      responses:
+        '200':
+          description: Scales
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Scale' } }
+    post:
+      tags: [Admin]
+      summary: Create a scale model entry
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Scale' }
+      responses:
+        '201':
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Scale' }
+  /scales/{id}:
+    parameters: [ { $ref: '#/components/parameters/IdPath' } ]
+    patch:
+      tags: [Admin]
+      summary: Update a scale (e.g. mark approved)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/Scale' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Scale' }
+
+  /devices:
+    get:
+      tags: [Admin]
+      summary: List devices
+      responses:
+        '200':
+          description: Devices
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/Device' } }
+  /devices/{id}:
+    parameters: [ { $ref: '#/components/parameters/IdPath' } ]
+    patch:
+      tags: [Admin]
+      summary: Update a device (e.g. block)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                blocked: { type: boolean }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Device' }
+
+  /config:
+    get:
+      tags: [Admin]
+      summary: List configuration entries
+      parameters:
+        - { in: query, name: scope, schema: { $ref: '#/components/schemas/ConfigScope' } }
+      responses:
+        '200':
+          description: Config entries
+          content:
+            application/json:
+              schema: { type: array, items: { $ref: '#/components/schemas/ConfigEntry' } }
+    put:
+      tags: [Admin]
+      summary: Upsert a configuration entry (audited)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ConfigEntry' }
+      responses:
+        '200':
+          description: Updated
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ConfigEntry' }
+
+  # ---------------------------------------------------------------- Reports
+  /reports/{type}:
+    get:
+      tags: [Reports]
+      summary: Generate a report (xlsx or csv)
+      parameters:
+        - in: path
+          name: type
+          required: true
+          schema:
+            type: string
+            enum: [daily_volume, productivity, accuracy, flags, manual_entry_rate]
+        - { in: query, name: format, schema: { type: string, enum: [xlsx, csv], default: xlsx } }
+        - { in: query, name: branchId, schema: { type: string, format: uuid } }
+        - { in: query, name: dateFrom, schema: { type: string, format: date-time } }
+        - { in: query, name: dateTo, schema: { type: string, format: date-time } }
+      responses:
+        '202':
+          description: Report job queued; poll or receive a signed download URL
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  jobId: { type: string }
+                  status: { type: string, enum: [queued, processing, ready] }
+                  downloadUrl: { type: string, format: uri, nullable: true }
+
+  # ---------------------------------------------------------------- Audit
+  /audit:
+    get:
+      tags: [Audit]
+      summary: Query the audit log
+      parameters:
+        - { in: query, name: entity, schema: { type: string } }
+        - { in: query, name: entityId, schema: { type: string } }
+        - { in: query, name: userId, schema: { type: string, format: uuid } }
+        - { in: query, name: dateFrom, schema: { type: string, format: date-time } }
+        - { in: query, name: dateTo, schema: { type: string, format: date-time } }
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/Limit'
+      responses:
+        '200':
+          description: Page of audit entries
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/AuditEntry' }
+
+  # ------------------------------------------------- Integration (Phase C stub)
+  /ext/shipments/{awb}:
+    get:
+      tags: [Integration]
+      summary: External shipment lookup (Phase C; API-key auth). Not active now.
+      security:
+        - apiKeyAuth: []
+      parameters:
+        - $ref: '#/components/parameters/AwbPath'
+      responses:
+        '200':
+          description: Shipment detail for an integrated caller
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ShipmentDetail' }
+        '501':
+          description: Not implemented until Phase C
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+    apiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-Api-Key
+
+  parameters:
+    AwbPath:
+      in: path
+      name: awb
+      required: true
+      schema: { type: string, pattern: '^AY\d{11}$' }
+      example: AY20435032852
+    IdPath:
+      in: path
+      name: id
+      required: true
+      schema: { type: string, format: uuid }
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: true
+      schema: { type: string }
+      description: Required on every create; replays return the original result.
+    Cursor:
+      in: query
+      name: cursor
+      schema: { type: string }
+    Limit:
+      in: query
+      name: limit
+      schema: { type: integer, default: 50, maximum: 200 }
+
+  responses:
+    BadRequest:
+      description: Validation error
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Unauthorized:
+      description: Missing or invalid credentials
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Forbidden:
+      description: Role or branch not permitted
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    NotFound:
+      description: Not found
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    Conflict:
+      description: Invalid state transition or conflict
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/Error' }
+    UserOk:
+      description: User
+      content:
+        application/json:
+          schema: { $ref: '#/components/schemas/User' }
+    UserPage:
+      description: Page of users
+      content:
+        application/json:
+          schema:
+            allOf:
+              - $ref: '#/components/schemas/Page'
+              - type: object
+                properties:
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/User' }
+
+  schemas:
+    # ---- Common ----
+    Error:
+      type: object
+      required: [code, message]
+      properties:
+        code: { type: string, example: VALIDATION_ERROR }
+        message: { type: string }
+        details: { type: object, additionalProperties: true }
+    Page:
+      type: object
+      properties:
+        items: { type: array, items: {} }
+        nextCursor: { type: string, nullable: true }
+    ReasonBody:
+      type: object
+      required: [reason]
+      properties:
+        reason: { type: string }
+
+    # ---- Enums ----
+    Role: { type: string, enum: [labour, team_leader, admin] }
+    ShipmentStatus: { type: string, enum: [in_progress, completed, remeasure_required] }
+    PackageStatus: { type: string, enum: [active, superseded, void] }
+    Confidence: { type: string, enum: [high, medium, low] }
+    MeasurementMethod: { type: string, enum: [marker, ar, manual] }
+    WeightSource: { type: string, enum: [scale, manual, none] }
+    PhotoKind: { type: string, enum: [raw, annotated] }
+    ScaleConnection: { type: string, enum: [ble, classic, hid] }
+    DeviceTier: { type: string, enum: [standard, ar, unsupported] }
+    FlagStatus: { type: string, enum: [open, resolved, dismissed] }
+    FlagType:
+      type: string
+      enum:
+        - low_confidence
+        - medium_confidence
+        - manual_entry
+        - manual_weight
+        - weight_discrepancy
+        - check_dimensions
+        - possible_duplicate
+        - worker_flag
+    RemeasureReason:
+      type: string
+      enum:
+        - low_confidence
+        - incorrect_dimensions
+        - bad_photo
+        - device_issue
+        - customer_dispute
+        - manual_verification
+        - other
+    RemeasureStatus: { type: string, enum: [open, done, cancelled] }
+    SyncStatus: { type: string, enum: [pending, syncing, synced, failed, conflict] }
+    ConfigScope: { type: string, enum: [global, client, branch] }
+
+    # ---- Auth ----
+    LoginRequest:
+      type: object
+      required: [employeeId, password]
+      properties:
+        employeeId: { type: string }
+        password: { type: string }
+        installId: { type: string, description: Device install id for offline-login binding }
+    TokenPair:
+      type: object
+      properties:
+        accessToken: { type: string }
+        refreshToken: { type: string }
+        accessTokenExpiresAt: { type: string, format: date-time }
+        refreshTokenExpiresAt: { type: string, format: date-time }
+        mustChangePassword: { type: boolean }
+        user: { $ref: '#/components/schemas/User' }
+
+    # ---- Device / config ----
+    DeviceRegisterRequest:
+      type: object
+      required: [installId, tier]
+      properties:
+        installId: { type: string }
+        manufacturer: { type: string }
+        model: { type: string }
+        os: { type: string }
+        osVersion: { type: string }
+        tier: { $ref: '#/components/schemas/DeviceTier' }
+    Device:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        installId: { type: string }
+        manufacturer: { type: string, nullable: true }
+        model: { type: string, nullable: true }
+        os: { type: string, nullable: true }
+        osVersion: { type: string, nullable: true }
+        tier: { $ref: '#/components/schemas/DeviceTier' }
+        lastUserId: { type: string, format: uuid, nullable: true }
+        lastSeenAt: { type: string, format: date-time, nullable: true }
+        blocked: { type: boolean }
+    EffectiveConfig:
+      type: object
+      description: Merged config (global → branch → client) for this user/device.
+      properties:
+        awbRegex: { type: string, example: '^AY\d{11}$' }
+        volumetricDivisor: { type: integer, example: 5000 }
+        dimensionRounding: { type: string, enum: [ceil], default: ceil }
+        chargeableStepKg: { type: number, example: 0.5 }
+        weightRequired: { type: boolean, example: true }
+        mediumConfirmAllowed: { type: boolean, example: true }
+        minDimensionCm: { type: integer, example: 1 }
+        maxDimensionCm: { type: integer, example: 300 }
+        idleAutoCompleteMinutes: { type: integer, example: 30 }
+        retention:
+          type: object
+          properties:
+            photoMonths: { type: integer, example: 12 }
+            localPurgeDays: { type: integer, example: 7 }
+    ConfigEntry:
+      type: object
+      required: [key, value]
+      properties:
+        key: { type: string }
+        value: {}
+        scope: { $ref: '#/components/schemas/ConfigScope' }
+        scopeId: { type: string, nullable: true }
+        updatedBy: { type: string, format: uuid, nullable: true }
+
+    # ---- Reference entities ----
+    Branch:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string }
+        name: { type: string }
+        status: { type: string, enum: [active, inactive] }
+    Client:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string }
+        name: { type: string }
+        aymakanAccountNo: { type: string, nullable: true }
+        volumetricDivisor: { type: integer, nullable: true }
+        status: { type: string, enum: [active, inactive] }
+    User:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        employeeId: { type: string }
+        name: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+        homeBranchId: { type: string, format: uuid }
+        adminScope:
+          oneOf:
+            - { type: array, items: { type: string } }
+            - { type: string, enum: [all] }
+          nullable: true
+        mustChangePassword: { type: boolean }
+        status: { type: string, enum: [active, inactive] }
+    UserCreate:
+      type: object
+      required: [employeeId, name, role, homeBranchId]
+      properties:
+        employeeId: { type: string }
+        name: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+        homeBranchId: { type: string, format: uuid }
+        adminScope:
+          oneOf:
+            - { type: array, items: { type: string } }
+            - { type: string, enum: [all] }
+          nullable: true
+        initialPassword: { type: string }
+    UserUpdate:
+      type: object
+      properties:
+        name: { type: string }
+        role: { $ref: '#/components/schemas/Role' }
+        homeBranchId: { type: string, format: uuid }
+        adminScope:
+          oneOf:
+            - { type: array, items: { type: string } }
+            - { type: string, enum: [all] }
+          nullable: true
+        status: { type: string, enum: [active, inactive] }
+        resetPassword: { type: boolean, description: Issue a new temp password + force change }
+        unlock: { type: boolean, description: Clear failed_logins and locked_until }
+    Station:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        code: { type: string }
+        branchId: { type: string, format: uuid }
+        matSizeMm: { type: integer }
+        markerSizeMm: { type: integer }
+        scaleId: { type: string, format: uuid, nullable: true }
+    Scale:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        model: { type: string }
+        connection: { $ref: '#/components/schemas/ScaleConnection' }
+        adapterKey: { type: string }
+        approved: { type: boolean }
+
+    # ---- Shipments / packages / versions ----
+    Shipment:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        awb: { type: string }
+        branchId: { type: string, format: uuid, nullable: true }
+        clientId: { type: string, format: uuid, nullable: true }
+        status: { $ref: '#/components/schemas/ShipmentStatus' }
+        flags: { type: array, items: { $ref: '#/components/schemas/FlagType' } }
+        totals: { $ref: '#/components/schemas/ShipmentTotals' }
+        completedAt: { type: string, format: date-time, nullable: true }
+        createdAt: { type: string, format: date-time }
+        updatedAt: { type: string, format: date-time }
+    ShipmentTotals:
+      type: object
+      description: Sum of active packages; recomputed on every change.
+      properties:
+        pieces: { type: integer }
+        cbm: { type: number, description: m³ to 4 decimals }
+        actualG: { type: integer }
+        volumetricG: { type: integer }
+        chargeableG: { type: integer }
+    ShipmentDetail:
+      allOf:
+        - $ref: '#/components/schemas/Shipment'
+        - type: object
+          properties:
+            packages:
+              type: array
+              items: { $ref: '#/components/schemas/Package' }
+    Package:
+      type: object
+      properties:
+        id: { type: string, format: uuid, description: Client-generated UUID }
+        shipmentId: { type: string, format: uuid }
+        packageNumber: { type: integer, nullable: true, description: Final, server-assigned }
+        provisionalNumber: { type: integer, nullable: true }
+        status: { $ref: '#/components/schemas/PackageStatus' }
+        stationId: { type: string, format: uuid, nullable: true }
+        deviceId: { type: string, format: uuid, nullable: true }
+        measuredBy: { type: string, format: uuid, nullable: true }
+        confirmedAt: { type: string, format: date-time, nullable: true }
+        syncReceivedAt: { type: string, format: date-time, nullable: true }
+        currentVersion: { $ref: '#/components/schemas/MeasurementVersion' }
+        photos: { type: array, items: { $ref: '#/components/schemas/Photo' } }
+    PackageCreate:
+      type: object
+      required: [id, lengthMm, widthMm, heightMm, method, confirmedAt]
+      description: >
+        Base units only. The server computes billing figures and the final
+        package number; any billing fields sent by the client are ignored.
+      properties:
+        id: { type: string, format: uuid, description: Client-generated UUID }
+        provisionalNumber: { type: integer, nullable: true }
+        stationId: { type: string, format: uuid, nullable: true }
+        deviceId: { type: string, format: uuid, nullable: true }
+        lengthMm: { type: integer }
+        widthMm: { type: integer }
+        heightMm: { type: integer }
+        actualWeightG: { type: integer, nullable: true }
+        weightSource: { $ref: '#/components/schemas/WeightSource' }
+        scaleId: { type: string, format: uuid, nullable: true }
+        method: { $ref: '#/components/schemas/MeasurementMethod' }
+        confidence: { $ref: '#/components/schemas/Confidence' }
+        confidenceDetail: { type: object, additionalProperties: true, nullable: true }
+        confirmedAt: { type: string, format: date-time }
+    CorrectionCreate:
+      type: object
+      required: [reason]
+      properties:
+        lengthMm: { type: integer }
+        widthMm: { type: integer }
+        heightMm: { type: integer }
+        actualWeightG: { type: integer, nullable: true }
+        weightSource: { $ref: '#/components/schemas/WeightSource' }
+        method: { $ref: '#/components/schemas/MeasurementMethod' }
+        reason: { type: string }
+    MeasurementVersion:
+      type: object
+      description: Immutable. Billing figures are server-computed and final.
+      properties:
+        id: { type: string, format: uuid }
+        packageId: { type: string, format: uuid }
+        versionNo: { type: integer }
+        lengthMm: { type: integer }
+        widthMm: { type: integer }
+        heightMm: { type: integer }
+        actualWeightG: { type: integer, nullable: true }
+        weightSource: { $ref: '#/components/schemas/WeightSource' }
+        scaleId: { type: string, format: uuid, nullable: true }
+        method: { $ref: '#/components/schemas/MeasurementMethod' }
+        confidence: { $ref: '#/components/schemas/Confidence' }
+        confidenceDetail: { type: object, additionalProperties: true, nullable: true }
+        divisorUsed: { type: integer }
+        billingLCm: { type: integer }
+        billingWCm: { type: integer }
+        billingHCm: { type: integer }
+        cbm: { type: number }
+        volumetricG: { type: integer }
+        chargeableG: { type: integer }
+        createdBy: { type: string, format: uuid, nullable: true }
+        reason: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+    Photo:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        packageId: { type: string, format: uuid }
+        versionId: { type: string, format: uuid, nullable: true }
+        kind: { $ref: '#/components/schemas/PhotoKind' }
+        width: { type: integer, nullable: true }
+        height: { type: integer, nullable: true }
+        bytes: { type: integer, nullable: true }
+    PhotoUploadTarget:
+      type: object
+      properties:
+        photoId: { type: string, format: uuid }
+        uploadUrl: { type: string, format: uri }
+        method: { type: string, example: PUT }
+        headers: { type: object, additionalProperties: { type: string } }
+        expiresAt: { type: string, format: date-time }
+
+    # ---- Sync / events ----
+    SyncItemResult:
+      type: object
+      properties:
+        id: { type: string, format: uuid, description: Package client UUID }
+        status: { $ref: '#/components/schemas/SyncStatus' }
+        packageNumber: { type: integer, nullable: true }
+        error: { $ref: '#/components/schemas/Error' }
+    MeasurementEvent:
+      type: object
+      required: [type, occurredAt]
+      properties:
+        id: { type: string, format: uuid }
+        deviceId: { type: string, format: uuid, nullable: true }
+        userId: { type: string, format: uuid, nullable: true }
+        awb: { type: string, nullable: true }
+        type:
+          type: string
+          example: measure_ready
+          description: scan | measure_start | measure_ready | retake | confirm | manual_entry | scale_stable | ...
+        payload: { type: object, additionalProperties: true, nullable: true }
+        occurredAt: { type: string, format: date-time }
+
+    # ---- Review ----
+    Flag:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        shipmentId: { type: string, format: uuid, nullable: true }
+        packageId: { type: string, format: uuid, nullable: true }
+        type: { $ref: '#/components/schemas/FlagType' }
+        status: { $ref: '#/components/schemas/FlagStatus' }
+        resolvedBy: { type: string, format: uuid, nullable: true }
+        note: { type: string, nullable: true }
+        createdAt: { type: string, format: date-time }
+    RemeasureCreate:
+      type: object
+      required: [shipmentId, packageIds, reason]
+      properties:
+        shipmentId: { type: string, format: uuid }
+        packageIds: { type: array, items: { type: string, format: uuid } }
+        reason: { $ref: '#/components/schemas/RemeasureReason' }
+        note: { type: string, description: Required when reason = other }
+    RemeasureRequest:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        shipmentId: { type: string, format: uuid }
+        packageIds: { type: array, items: { type: string, format: uuid } }
+        reason: { $ref: '#/components/schemas/RemeasureReason' }
+        note: { type: string, nullable: true }
+        status: { $ref: '#/components/schemas/RemeasureStatus' }
+        requestedBy: { type: string, format: uuid }
+        doneBy: { type: string, format: uuid, nullable: true }
+        closedAt: { type: string, format: date-time, nullable: true }
+
+    # ---- Audit ----
+    AuditEntry:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        at: { type: string, format: date-time }
+        userId: { type: string, format: uuid, nullable: true }
+        role: { $ref: '#/components/schemas/Role' }
+        entity: { type: string }
+        entityId: { type: string, nullable: true }
+        action: { type: string }
+        before: { type: object, additionalProperties: true, nullable: true }
+        after: { type: object, additionalProperties: true, nullable: true }
+        reason: { type: string, nullable: true }
+        ip: { type: string, nullable: true }
+        deviceId: { type: string, format: uuid, nullable: true }
