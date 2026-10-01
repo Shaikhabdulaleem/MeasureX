@@ -55,3 +55,13 @@ pnpm-debug.log*
 
 # Flutter SDK accidentally placed inside the repo (do not commit)
 /flutter/
+
+# Flutter-generated platform folders (scaffold with `flutter create`; see
+# apps/mobile/README.md — camera permission + cleartext are documented there)
+apps/mobile/android/
+apps/mobile/ios/
+apps/mobile/linux/
+apps/mobile/macos/
+apps/mobile/windows/
+apps/mobile/web/
+apps/mobile/.metadata
