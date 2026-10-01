@@ -5,10 +5,14 @@ with a web dashboard and a server that is the final authority on every
 calculation. Build reference: [`docs/PRD.md`](docs/PRD.md). Conventions and the
 non-negotiable rules live in [`CLAUDE.md`](CLAUDE.md).
 
-**Status:** Milestone 0 (Foundation) — monorepo, CI, schema + migration,
-OpenAPI, shared formulas, auth (login / refresh / logout / change-password with
-forced first-login change, 5-attempt lockout, audit), a web login + dashboard
-skeleton, and a mobile login + home skeleton. Feature capture begins at M1.
+**Status:** Milestone 1 (Scan & capture). On the M0 foundation (monorepo, CI,
+schema, OpenAPI, shared formulas, auth): AWB lookup, idempotent package create
+with server-assigned numbers and billing, photo upload/view via a private
+S3-compatible bucket, shipment complete + idle auto-complete, scoped shipment
+list/detail, and worker flag / remeasure endpoints. Mobile has the full scan →
+manual dimensions → review → save → complete → summary flow plus history; the web
+dashboard has a shipments list + detail with signed photos. Scale is M2, offline
+sync M3.
 
 ## Layout
 
@@ -24,14 +28,14 @@ docs          PRD, decisions, OpenAPI; schema lives in apps/api/prisma
 ## Prerequisites
 
 - Node 20+ and **pnpm 9** (`corepack enable` provides it)
-- Docker + Docker Compose (Postgres + Redis)
+- Docker + Docker Compose (Postgres + Redis + MinIO)
 - Flutter 3.4+ (for the mobile app)
 
 ## 1. Infrastructure
 
 ```bash
 cp .env.example .env            # optional; compose has sane defaults
-docker compose up -d            # Postgres :5432, Redis :6379
+docker compose up -d            # Postgres :5432, Redis :6379, MinIO :9000 (console :9001)
 ```
 
 ## 2. API

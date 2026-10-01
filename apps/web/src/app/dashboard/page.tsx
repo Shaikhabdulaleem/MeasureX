@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useI18n } from '@/i18n/client';
 import { LanguageToggle } from '@/components/LanguageToggle';
@@ -63,6 +64,15 @@ export default function DashboardPage() {
             {t('role')}: {t(ROLE_LABELS[session.user.role] ?? session.user.role)}
           </p>
         </div>
+        <div className="mt-6">
+          <Link
+            href="/shipments"
+            className="inline-flex items-center gap-2 rounded-lg bg-brand px-5 py-3 font-semibold text-white hover:opacity-90"
+          >
+            {t('shipments')} →
+          </Link>
+        </div>
+
         <p className="mt-6 text-sm text-slate-400">{t('dashboardEmpty')}</p>
       </section>
     </main>

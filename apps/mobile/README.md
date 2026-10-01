@@ -2,11 +2,15 @@
 
 Flutter (Dart) app for Labour and Team Leader.
 
-**Milestone 0 (current):** skeleton with Riverpod state, localisation in
-**English / Arabic (RTL) / Bengali**, a **login** screen, forced
-**password-change** screen, and a **Home** screen with the big **SCAN SHIPMENT**
-button (not wired yet) plus **sync** and **scale** status placeholders. Auth
-talks to the API (`/auth/*`). Scanner, measurement, scale and sync land in M1+.
+**Milestone 1 (current):** scan & capture. On top of the M0 auth skeleton:
+AWB **scanner** (`mobile_scanner`, Code128 + QR, regex-filtered, beep + vibrate,
+torch, manual entry), **history check** (new / open / completed with "Flag for
+Team Leader" for Labour and "Remeasure" for TL/Admin), **manual dimensions**
+(L/W/H cm, 1–300, mandatory photo), **review** with a billing preview from the
+shared Dart formulas ([`lib/src/core/billing.dart`](lib/src/core/billing.dart)),
+**save → add another / complete → summary → scan next**, and a **history** list
+with shipment detail. All strings in **English / Arabic (RTL) / Bengali**. Scale
+and offline sync land in M2–M3.
 
 Full stack target (PRD §14): Flutter + Riverpod, Drift + SQLCipher, ML Kit
 scanning, `flutter_blue_plus`, a Kotlin Bluetooth-Classic plugin, and the C++
@@ -35,6 +39,16 @@ For development, allow cleartext to your dev host by adding to
 ```
 
 (Production uses HTTPS, so this is a dev-only convenience.)
+
+**Camera permission (M1).** The scanner and the mandatory photo need the camera.
+Add to `android/app/src/main/AndroidManifest.xml` above `<application>`:
+
+```xml
+<uses-permission android:name="android.permission.CAMERA" />
+```
+
+`mobile_scanner` needs Android `minSdkVersion` 21+ (Flutter's default). For iOS,
+add `NSCameraUsageDescription` to `ios/Runner/Info.plist`.
 
 ## Run
 

@@ -181,6 +181,57 @@ any transition not listed is rejected.
 
 ---
 
+## Milestone 1 — Scan & capture (implementation decisions)
+
+Added 2026-10-01 while building M1 (PRD §5–§8, §16). These refine, not override,
+the decisions above; where a value differs for M1 it is called out.
+
+- **Config key name.** A6's actual-weight flag is implemented as config key
+  `actual_weight_required` (the earlier log said `weight_required`; the build uses
+  the former). **Seeded `false` for M1** because scale capture lands in M2, so
+  capture saves with `weight_source = none` and no actual weight. The eventual
+  A6 default (mandatory) is unchanged; it flips on in M2.
+- **New config keys** seeded and exposed via `GET /devices/me/config`:
+  `min_dimension_cm` (1), `max_dimension_cm` (300), `idle_auto_complete_minutes`
+  (30), `photo_retention_months` (12), `local_purge_days` (7).
+- **Package create is idempotent on two keys:** the client UUID (`package.id`,
+  PK) and the `Idempotency-Key` header. A replay on either returns the original
+  package with HTTP 200; a genuinely new package returns 201. The strict
+  validation pipe **rejects** any client-sent billing field (400) — the client
+  sends base units only; the server computes every billing figure.
+- **Package numbering** = max package number over all non-deleted packages + 1
+  (regardless of status), so a voided number is never reused (the
+  `(shipment, package_number)` uniqueness would otherwise break). Voided packages
+  are excluded from totals, not from numbering. The `superseded`-with-same-number
+  remeasure path (PRD §8) is deferred to M4 and will need a partial-unique index
+  on active packages.
+- **AWB lookup is not branch-scoped** (by design, PRD §10 cross-device check) and
+  returns `found=false` for a new AWB instead of 404, so the scan flow continues.
+  All other shipment reads **are** scoped: admin → scope list / all; team_leader →
+  home branch; labour → own measurements in the last 7 days.
+- **Idle auto-complete** runs as a BullMQ repeatable scan (every 60 s) that
+  completes `in_progress` shipments idle past `idle_auto_complete_minutes`
+  (`shipment.updated_at` tracks the last package). The scheduler self-disables in
+  tests and when `REDIS_URL` is unset; the underlying service is always callable
+  and is tested directly.
+- **Photos** use an S3-compatible store (MinIO locally). The API returns a signed
+  PUT for upload and a short-lived signed GET for viewing; bytes never pass
+  through the API. The bucket is private; view URLs are **Team Leader/Admin only**
+  and every view writes a `photo_viewed` audit entry.
+- **Flag / Remeasure are M1 "buttons + endpoints" only** (confirmed with product).
+  `POST /flags` creates a `worker_flag` (Labour "Flag for Team Leader") and adds
+  the type to the shipment's `flags`; `POST /remeasurements` (TL/Admin) moves a
+  completed shipment → `remeasure_required`, and cancel returns it to `completed`.
+  The full remeasure-completion loop, corrections, voids and the TL review UI are
+  **M4**.
+- **Web dashboard languages:** English + Arabic (RTL) only for M1, per PRD §11.
+  Bengali remains mobile-only (EN/AR/BN).
+- **OpenAPI** updated to match the build: defined the previously-referenced
+  `AwbLookupResult`, added `POST /flags` with `FlagCreate`, dropped the required
+  `Idempotency-Key` on photo uploads, and added `photo` to `PhotoUploadTarget`.
+
+---
+
 ## Open questions (PRD §17) — do not block M0
 
 | # | Question | Needed by |

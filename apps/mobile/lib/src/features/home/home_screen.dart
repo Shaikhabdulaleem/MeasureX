@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../l10n/app_localizations.dart';
 import '../auth/auth_controller.dart';
+import '../capture/scanner_screen.dart';
+import '../history/history_screen.dart';
 
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
@@ -15,6 +17,13 @@ class HomeScreen extends ConsumerWidget {
       appBar: AppBar(
         title: Text(t.appName),
         actions: [
+          IconButton(
+            tooltip: t.history,
+            icon: const Icon(Icons.history),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const HistoryScreen()),
+            ),
+          ),
           IconButton(
             tooltip: t.signOut,
             icon: const Icon(Icons.logout),
@@ -53,11 +62,13 @@ class HomeScreen extends ConsumerWidget {
                 ],
               ),
               const Spacer(),
-              // Big primary action — not wired until M1.
+              // Big primary action — start the scan & capture flow.
               SizedBox(
                 height: 96,
                 child: FilledButton.icon(
-                  onPressed: null,
+                  onPressed: () => Navigator.of(context).push(
+                    MaterialPageRoute(builder: (_) => const ScannerScreen()),
+                  ),
                   icon: const Icon(Icons.qr_code_scanner, size: 32),
                   label: Text(
                     t.scanShipment,

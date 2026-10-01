@@ -4,6 +4,9 @@ export interface AuthUser {
   sub: string;
   employeeId: string;
   role: string;
+  homeBranchId: string;
+  /** Admin scope: array of branch ids, the string "all", or null for non-admins. */
+  adminScope: string[] | 'all' | null;
   mustChangePassword: boolean;
 }
 

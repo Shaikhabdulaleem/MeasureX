@@ -26,8 +26,14 @@ const CONFIG: Array<{ key: string; value: unknown }> = [
   { key: 'awb_regex', value: '^AY\\d{11}$' },
   { key: 'volumetric_divisor', value: 5000 },
   { key: 'chargeable_step_kg', value: 0.5 },
-  { key: 'weight_required', value: true },
+  // Scale lands in M2; actual weight is not required to save in M1 (PRD A6, M1 scope).
+  { key: 'actual_weight_required', value: false },
   { key: 'medium_confirm_allowed', value: true },
+  { key: 'min_dimension_cm', value: 1 },
+  { key: 'max_dimension_cm', value: 300 },
+  { key: 'idle_auto_complete_minutes', value: 30 },
+  { key: 'photo_retention_months', value: 12 },
+  { key: 'local_purge_days', value: 7 },
 ];
 
 async function main(): Promise<void> {

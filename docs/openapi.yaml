@@ -145,16 +145,19 @@ paths:
     get:
       tags: [Lookup]
       summary: Existing MeasureX shipment + packages for an AWB
-      description: Needs connection; used for the cross-device history check.
+      description: >
+        Needs connection; used for the cross-device history check. Intentionally
+        NOT branch-scoped so an AWB measured anywhere is detected. Returns
+        found=false for a new AWB (not 404) so the capture flow continues.
       parameters:
         - $ref: '#/components/parameters/AwbPath'
       responses:
         '200':
-          description: Lookup result
+          description: Lookup result (found=false for an unknown AWB)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/AwbLookupResult' }
-        '404': { $ref: '#/components/responses/NotFound' }
+        '400': { $ref: '#/components/responses/BadRequest' }
 
   # ---------------------------------------------------------------- Shipments
   /shipments:
@@ -310,18 +313,19 @@ paths:
       summary: Request a signed upload URL for a package photo
       parameters:
         - $ref: '#/components/parameters/IdPath'
-        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
           application/json:
             schema:
               type: object
-              required: [kind, contentType]
+              required: [contentType]
               properties:
                 kind: { $ref: '#/components/schemas/PhotoKind' }
                 contentType: { type: string, example: image/jpeg }
                 bytes: { type: integer }
+                width: { type: integer }
+                height: { type: integer }
       responses:
         '201':
           description: Signed upload target
@@ -422,6 +426,26 @@ paths:
 
   # ---------------------------------------------------------------- Review
   /flags:
+    post:
+      tags: [Review]
+      summary: Create a flag (e.g. Labour "Flag for Team Leader" → worker_flag)
+      description: >
+        Any authenticated role. A shipmentId or packageId is required; the type
+        defaults to worker_flag. The type is also added to the shipment's flags
+        array so it surfaces on the dashboard. Full triage is M4.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/FlagCreate' }
+      responses:
+        '201':
+          description: Flag created
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Flag' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '404': { $ref: '#/components/responses/NotFound' }
     get:
       tags: [Review]
       summary: List flags for the review queue
@@ -1243,6 +1267,20 @@ components:
         method: { type: string, example: PUT }
         headers: { type: object, additionalProperties: { type: string } }
         expiresAt: { type: string, format: date-time }
+        photo: { $ref: '#/components/schemas/Photo' }
+
+    AwbLookupResult:
+      type: object
+      description: Cross-device history check for an AWB (PRD §5 step 3, §10).
+      properties:
+        awb: { type: string }
+        found: { type: boolean }
+        shipment:
+          nullable: true
+          allOf: [{ $ref: '#/components/schemas/ShipmentDetail' }]
+        nextPackageNumber:
+          type: integer
+          description: Highest package number + 1 (1 when the AWB is new).
 
     # ---- Sync / events ----
     SyncItemResult:
@@ -1279,6 +1317,16 @@ components:
         resolvedBy: { type: string, format: uuid, nullable: true }
         note: { type: string, nullable: true }
         createdAt: { type: string, format: date-time }
+    FlagCreate:
+      type: object
+      description: At least one of shipmentId / packageId is required.
+      properties:
+        shipmentId: { type: string, format: uuid }
+        packageId: { type: string, format: uuid }
+        type:
+          allOf: [{ $ref: '#/components/schemas/FlagType' }]
+          default: worker_flag
+        note: { type: string }
     RemeasureCreate:
       type: object
       required: [shipmentId, packageIds, reason]

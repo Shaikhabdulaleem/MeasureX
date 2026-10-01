@@ -272,6 +272,8 @@ export class AuthService {
         sub: user.id,
         employeeId: user.employeeId,
         role: user.role,
+        homeBranchId: user.homeBranchId,
+        adminScope: user.adminScope ?? null,
         mustChangePassword: user.mustChangePassword,
         type: 'access',
       },
