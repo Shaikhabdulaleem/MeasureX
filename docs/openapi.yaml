@@ -265,6 +265,14 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Package' }
         '400': { $ref: '#/components/responses/BadRequest' }
+        '409':
+          description: >
+            Invalid state or scope: `SHIPMENT_NOT_OPEN` (not in_progress) or
+            `SHIPMENT_OTHER_BRANCH` (shipment belongs to another branch; a scoped
+            Team Leader / Admin may override).
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /packages/{id}/corrections:
     post:
@@ -311,6 +319,10 @@ paths:
     post:
       tags: [Photos]
       summary: Request a signed upload URL for a package photo
+      description: >
+        Allowed for the worker who measured the package, or a Team Leader / Admin
+        whose scope covers its shipment. The request is audited
+        (photo_upload_requested).
       parameters:
         - $ref: '#/components/parameters/IdPath'
       requestBody:
@@ -332,11 +344,17 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/PhotoUploadTarget' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /photos/{id}:
     get:
       tags: [Photos]
       summary: Signed view URL for a photo (view logged; Team Leader/Admin)
+      description: >
+        Team Leader / Admin only, and only for a photo whose shipment is within
+        the caller's branch scope. Out of scope → 404. The view is logged
+        (photo_viewed).
       parameters:
         - $ref: '#/components/parameters/IdPath'
       responses:
@@ -350,6 +368,7 @@ paths:
                   url: { type: string, format: uri }
                   expiresAt: { type: string, format: date-time }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   # ---------------------------------------------------------------- Sync
   /sync/batch:

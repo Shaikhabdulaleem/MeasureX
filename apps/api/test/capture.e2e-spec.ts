@@ -213,3 +213,18 @@ describe('Shipment state machine (PRD §8)', () => {
     expect(detail.body.totals.cbm).toBeCloseTo(0.0598, 4);
   });
 });
+
+describe('Concurrent package numbering (finding 3)', () => {
+  it('assigns PKG 01–05 for five concurrent creates, no errors', async () => {
+    const awb = randomAwb();
+    const results = await Promise.all(
+      Array.from({ length: 5 }, () => createPackage(awb, packageBody(), randomUUID())),
+    );
+
+    for (const res of results) {
+      expect(res.status).toBe(201);
+    }
+    const numbers = results.map((r) => r.body.packageNumber).sort((a, b) => a - b);
+    expect(numbers).toEqual([1, 2, 3, 4, 5]);
+  });
+});

@@ -230,6 +230,27 @@ the decisions above; where a value differs for M1 it is called out.
   `AwbLookupResult`, added `POST /flags` with `FlagCreate`, dropped the required
   `Idempotency-Key` on photo uploads, and added `photo` to `PhotoUploadTarget`.
 
+### M1 review fixes (post-review hardening)
+
+- **Admin scope is fail-closed.** `shipmentScopeWhere` now grants all branches
+  only for `adminScope = "all"` (or an array containing `"all"`); an admin with
+  `null`/empty scope sees **nothing**. Seed keeps `ADMIN001` explicitly `"all"`
+  and self-heals it on re-seed.
+- **Photo view is branch-scoped.** `GET /photos/{id}` checks the photo's shipment
+  against `shipmentScopeWhere` — a Team Leader outside the branch (or scopeless
+  admin) gets **404**, not the URL.
+- **Photo upload is authorized.** `POST /packages/{id}/photos` is allowed only
+  for the worker who measured the package, or a TL/Admin whose scope covers its
+  shipment; it writes a `photo_upload_requested` audit entry.
+- **Cross-branch add is rejected.** Adding a package to a shipment in another
+  branch returns **409 `SHIPMENT_OTHER_BRANCH`**; a scoped admin (branch in scope
+  or `"all"`) may override.
+- **Concurrent numbering is race-free.** Package create takes a per-AWB
+  transaction advisory lock (`pg_advisory_xact_lock`) so concurrent creates get
+  distinct sequential numbers, with a retry (≤3) on a `(shipment_id,
+  package_number)` conflict as a safety net instead of a 500. Covered by a
+  5-concurrent-create test expecting PKG 01–05.
+
 ---
 
 ## Open questions (PRD §17) — do not block M0

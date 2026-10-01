@@ -20,9 +20,11 @@ let branchA: string;
 let branchB: string;
 let labourA: AuthContext;
 let labourA2: AuthContext;
+let labourB: AuthContext;
 let tlA: AuthContext;
 let tlB: AuthContext;
 let adminAll: AuthContext;
+let adminNull: AuthContext;
 
 const WORKED = { lengthMm: 452, widthMm: 301, heightMm: 204 };
 
@@ -66,10 +68,19 @@ beforeAll(async () => {
     employeeId: uniqueEmployeeId('ACC_TLB'),
     role: 'team_leader',
   });
+  labourB = await createAndLogin(prisma, server, branchB, {
+    employeeId: uniqueEmployeeId('ACC_LABB'),
+    role: 'labour',
+  });
   adminAll = await createAndLogin(prisma, server, branchA, {
     employeeId: uniqueEmployeeId('ACC_ADMIN'),
     role: 'admin',
     adminScope: 'all',
+  });
+  adminNull = await createAndLogin(prisma, server, branchA, {
+    employeeId: uniqueEmployeeId('ACC_ADMIN_NULL'),
+    role: 'admin',
+    adminScope: undefined, // stored as null → fail-closed, sees nothing
   });
 });
 
@@ -158,6 +169,115 @@ describe('Photos (PRD §6)', () => {
       where: { entity: 'photo', entityId: photoId, action: 'photo_viewed' },
     });
     expect(audit).not.toBeNull();
+  });
+
+  it('scopes the photo view URL to the branch (finding 1)', async () => {
+    const awb = randomAwb();
+    const pkg = await createPackage(labourA.accessToken, awb).expect(201);
+    const target = await request(server)
+      .post(`/api/v1/packages/${pkg.body.id}/photos`)
+      .set('Authorization', `Bearer ${labourA.accessToken}`)
+      .send({ contentType: 'image/jpeg' })
+      .expect(201);
+    const photoId = target.body.photoId;
+
+    // TL in another branch cannot view (out of scope → 404, not 403).
+    await request(server)
+      .get(`/api/v1/photos/${photoId}`)
+      .set('Authorization', `Bearer ${tlB.accessToken}`)
+      .expect(404);
+
+    // Admin with no scope sees nothing either.
+    await request(server)
+      .get(`/api/v1/photos/${photoId}`)
+      .set('Authorization', `Bearer ${adminNull.accessToken}`)
+      .expect(404);
+
+    // TL in the shipment's branch can.
+    await request(server)
+      .get(`/api/v1/photos/${photoId}`)
+      .set('Authorization', `Bearer ${tlA.accessToken}`)
+      .expect(200);
+  });
+
+  it('authorises the upload target and audits the request (finding 2)', async () => {
+    const awb = randomAwb();
+    const pkg = await createPackage(labourA.accessToken, awb).expect(201);
+
+    // A different labour who did not measure the package cannot attach a photo.
+    await request(server)
+      .post(`/api/v1/packages/${pkg.body.id}/photos`)
+      .set('Authorization', `Bearer ${labourA2.accessToken}`)
+      .send({ contentType: 'image/jpeg' })
+      .expect(403);
+
+    // A TL in another branch cannot either (out of scope).
+    await request(server)
+      .post(`/api/v1/packages/${pkg.body.id}/photos`)
+      .set('Authorization', `Bearer ${tlB.accessToken}`)
+      .send({ contentType: 'image/jpeg' })
+      .expect(403);
+
+    // The measurer can, and the request is audited.
+    const target = await request(server)
+      .post(`/api/v1/packages/${pkg.body.id}/photos`)
+      .set('Authorization', `Bearer ${labourA.accessToken}`)
+      .send({ contentType: 'image/jpeg' })
+      .expect(201);
+    const audit = await prisma.auditLog.findFirst({
+      where: {
+        entity: 'photo',
+        entityId: target.body.photoId,
+        action: 'photo_upload_requested',
+      },
+    });
+    expect(audit).not.toBeNull();
+
+    // A TL within the shipment's branch can also attach.
+    await request(server)
+      .post(`/api/v1/packages/${pkg.body.id}/photos`)
+      .set('Authorization', `Bearer ${tlA.accessToken}`)
+      .send({ contentType: 'image/jpeg' })
+      .expect(201);
+  });
+});
+
+describe('Cross-branch package add (finding 4)', () => {
+  it('rejects adding to another branch, but a scoped admin may override', async () => {
+    const awb = randomAwb();
+    // Shipment created in branch A by labourA.
+    await createPackage(labourA.accessToken, awb).expect(201);
+
+    // Labour in branch B cannot add a package → 409 SHIPMENT_OTHER_BRANCH.
+    const blocked = await createPackage(labourB.accessToken, awb).expect(409);
+    expect(blocked.body.code).toBe('SHIPMENT_OTHER_BRANCH');
+
+    // TL in branch B is also confined to their home branch.
+    const blockedTl = await createPackage(tlB.accessToken, awb).expect(409);
+    expect(blockedTl.body.code).toBe('SHIPMENT_OTHER_BRANCH');
+
+    // Admin scoped to all branches may add across branches.
+    await createPackage(adminAll.accessToken, awb).expect(201);
+  });
+});
+
+describe('Admin scope fail-closed (finding 5)', () => {
+  it('an admin with no scope sees no shipments', async () => {
+    const awb = randomAwb();
+    await createPackage(labourA.accessToken, awb).expect(201);
+
+    // Detail is 404 (not found within an empty scope).
+    await request(server)
+      .get(`/api/v1/shipments/${awb}`)
+      .set('Authorization', `Bearer ${adminNull.accessToken}`)
+      .expect(404);
+
+    // The list excludes everything for a scopeless admin.
+    const list = await request(server)
+      .get('/api/v1/shipments')
+      .set('Authorization', `Bearer ${adminNull.accessToken}`)
+      .expect(200);
+    expect(list.body.items).toHaveLength(0);
   });
 });
 

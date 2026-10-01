@@ -48,7 +48,9 @@ async function main(): Promise<void> {
   for (const u of USERS) {
     await prisma.user.upsert({
       where: { employeeId: u.employeeId },
-      update: {},
+      // Keep the admin scope correct on re-seed: an admin with no scope now has
+      // NO access (fail-closed), so ADMIN001 must stay explicitly "all".
+      update: { adminScope: u.adminScope === undefined ? undefined : (u.adminScope as object) },
       create: {
         employeeId: u.employeeId,
         name: u.name,

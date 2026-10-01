@@ -8,6 +8,7 @@ import { assertValidAwb } from '../common/awb';
 import { computeVersionBilling } from '../common/billing';
 import { nextPackageNumber } from '../common/package-number';
 import { recomputeShipmentTotals } from '../common/totals';
+import { canAccessBranch } from '../common/scope';
 import { serializePackage, PackageRow } from '../common/serializers';
 import { PackageCreateDto } from './dto/package.dto';
 
@@ -15,6 +16,9 @@ const PACKAGE_INCLUDE = {
   currentVersion: true,
   photos: { where: { deletedAt: null } },
 } satisfies Prisma.PackageInclude;
+
+/** How many times to retry a create that lost the package-number race. */
+const MAX_NUMBER_RETRIES = 3;
 
 @Injectable()
 export class PackagesService {
@@ -41,103 +45,7 @@ export class PackagesService {
     this.assertDimensionsInRange(dto, cfg.minDimensionCm, cfg.maxDimensionCm);
     this.assertWeight(dto, cfg.weightRequired);
 
-    const outcome = await this.prisma.$transaction(async (tx) => {
-      // 1. Idempotency: a resent create (same client UUID or Idempotency-Key)
-      //    returns the original package untouched (PRD §10 rule 1).
-      const existing = await tx.package.findFirst({
-        where: {
-          deletedAt: null,
-          OR: [{ id: dto.id }, { idempotencyKey }],
-        },
-        include: PACKAGE_INCLUDE,
-      });
-      if (existing) {
-        return { package: existing, replayed: true };
-      }
-
-      // 2. Find or create the shipment (created on the first package, §5).
-      const shipment = await this.findOrCreateShipment(tx, awb, user.homeBranchId);
-
-      // 3. State machine: packages may only be added while in_progress (§8).
-      if (shipment.status !== 'in_progress') {
-        throw new ConflictException({
-          code: 'SHIPMENT_NOT_OPEN',
-          message: `Cannot add a package to a ${shipment.status} shipment`,
-          details: { awb, status: shipment.status },
-        });
-      }
-
-      // 4. Server assigns the authoritative number (§7).
-      const existingPackages = await tx.package.findMany({
-        where: { shipmentId: shipment.id, deletedAt: null },
-        select: { packageNumber: true },
-      });
-      const packageNumber = nextPackageNumber(existingPackages);
-
-      // 5. Create the package, then its immutable v1 version, then link it.
-      await tx.package.create({
-        data: {
-          id: dto.id,
-          shipmentId: shipment.id,
-          packageNumber,
-          provisionalNumber: dto.provisionalNumber ?? null,
-          status: 'active',
-          stationId: dto.stationId ?? null,
-          deviceId: dto.deviceId ?? null,
-          measuredBy: user.sub,
-          idempotencyKey,
-          confirmedAt: new Date(dto.confirmedAt),
-          syncReceivedAt: new Date(),
-        },
-      });
-
-      const billing = computeVersionBilling(
-        {
-          lengthMm: dto.lengthMm,
-          widthMm: dto.widthMm,
-          heightMm: dto.heightMm,
-          actualWeightG: dto.actualWeightG ?? null,
-        },
-        cfg,
-      );
-
-      const version = await tx.measurementVersion.create({
-        data: {
-          packageId: dto.id,
-          versionNo: 1,
-          lengthMm: dto.lengthMm,
-          widthMm: dto.widthMm,
-          heightMm: dto.heightMm,
-          actualWeightG: dto.actualWeightG ?? null,
-          weightSource: dto.weightSource ?? 'none',
-          scaleId: dto.scaleId ?? null,
-          method: dto.method ?? 'manual',
-          confidence: dto.confidence ?? null,
-          confidenceDetail: (dto.confidenceDetail ?? undefined) as Prisma.InputJsonValue,
-          divisorUsed: billing.divisorUsed,
-          billingLCm: billing.billingLCm,
-          billingWCm: billing.billingWCm,
-          billingHCm: billing.billingHCm,
-          cbm: billing.cbm,
-          volumetricG: billing.volumetricG,
-          chargeableG: billing.chargeableG,
-          createdBy: user.sub,
-        },
-      });
-
-      await tx.package.update({
-        where: { id: dto.id },
-        data: { currentVersionId: version.id },
-      });
-
-      await recomputeShipmentTotals(tx, shipment.id);
-
-      const created = await tx.package.findUniqueOrThrow({
-        where: { id: dto.id },
-        include: PACKAGE_INCLUDE,
-      });
-      return { package: created, replayed: false };
-    });
+    const outcome = await this.createWithRetry(awb, dto, idempotencyKey, user, cfg);
 
     if (!outcome.replayed) {
       await this.audit.record({
@@ -153,6 +61,155 @@ export class PackagesService {
     }
 
     return { package: serializePackage(outcome.package as PackageRow), replayed: outcome.replayed };
+  }
+
+  /**
+   * Run the create transaction, retrying on a lost package-number race. The
+   * per-AWB advisory lock serialises concurrent creates so numbering is
+   * deterministic; the retry is a safety net if a conflict still slips through
+   * (e.g. advisory-key hash collision) so we never surface a 500.
+   */
+  private async createWithRetry(
+    awb: string,
+    dto: PackageCreateDto,
+    idempotencyKey: string,
+    user: AuthUser,
+    cfg: Awaited<ReturnType<ConfigService['getEffectiveConfig']>>,
+  ): Promise<{ package: PackageRow; replayed: boolean }> {
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.runCreateTransaction(awb, dto, idempotencyKey, user, cfg);
+      } catch (err) {
+        if (isPackageNumberConflict(err) && attempt < MAX_NUMBER_RETRIES) {
+          continue; // another create took our number — recompute and retry
+        }
+        throw err;
+      }
+    }
+  }
+
+  private runCreateTransaction(
+    awb: string,
+    dto: PackageCreateDto,
+    idempotencyKey: string,
+    user: AuthUser,
+    cfg: Awaited<ReturnType<ConfigService['getEffectiveConfig']>>,
+  ): Promise<{ package: PackageRow; replayed: boolean }> {
+    return this.prisma.$transaction(
+      async (tx) => {
+        // Serialise concurrent creates for the same AWB so package numbers are
+        // assigned without racing (PRD §7, server is final). The lock releases
+        // at transaction end.
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${awb})::bigint)`;
+
+        // 1. Idempotency: a resent create (same client UUID or Idempotency-Key)
+        //    returns the original package untouched (PRD §10 rule 1).
+        const existing = await tx.package.findFirst({
+          where: {
+            deletedAt: null,
+            OR: [{ id: dto.id }, { idempotencyKey }],
+          },
+          include: PACKAGE_INCLUDE,
+        });
+        if (existing) {
+          return { package: existing, replayed: true };
+        }
+
+        // 2. Find or create the shipment (created on the first package, §5).
+        const shipment = await this.findOrCreateShipment(tx, awb, user.homeBranchId);
+
+        // 3. Branch guard: a package may only be added to a shipment in the
+        //    user's branch; a scoped TL/Admin may override (PRD §3).
+        if (!canAccessBranch(user, shipment.branchId)) {
+          throw new ConflictException({
+            code: 'SHIPMENT_OTHER_BRANCH',
+            message: 'This shipment belongs to another branch',
+            details: { awb, branchId: shipment.branchId },
+          });
+        }
+
+        // 4. State machine: packages may only be added while in_progress (§8).
+        if (shipment.status !== 'in_progress') {
+          throw new ConflictException({
+            code: 'SHIPMENT_NOT_OPEN',
+            message: `Cannot add a package to a ${shipment.status} shipment`,
+            details: { awb, status: shipment.status },
+          });
+        }
+
+        // 5. Server assigns the authoritative number (§7).
+        const existingPackages = await tx.package.findMany({
+          where: { shipmentId: shipment.id, deletedAt: null },
+          select: { packageNumber: true },
+        });
+        const packageNumber = nextPackageNumber(existingPackages);
+
+        // 6. Create the package, then its immutable v1 version, then link it.
+        await tx.package.create({
+          data: {
+            id: dto.id,
+            shipmentId: shipment.id,
+            packageNumber,
+            provisionalNumber: dto.provisionalNumber ?? null,
+            status: 'active',
+            stationId: dto.stationId ?? null,
+            deviceId: dto.deviceId ?? null,
+            measuredBy: user.sub,
+            idempotencyKey,
+            confirmedAt: new Date(dto.confirmedAt),
+            syncReceivedAt: new Date(),
+          },
+        });
+
+        const billing = computeVersionBilling(
+          {
+            lengthMm: dto.lengthMm,
+            widthMm: dto.widthMm,
+            heightMm: dto.heightMm,
+            actualWeightG: dto.actualWeightG ?? null,
+          },
+          cfg,
+        );
+
+        const version = await tx.measurementVersion.create({
+          data: {
+            packageId: dto.id,
+            versionNo: 1,
+            lengthMm: dto.lengthMm,
+            widthMm: dto.widthMm,
+            heightMm: dto.heightMm,
+            actualWeightG: dto.actualWeightG ?? null,
+            weightSource: dto.weightSource ?? 'none',
+            scaleId: dto.scaleId ?? null,
+            method: dto.method ?? 'manual',
+            confidence: dto.confidence ?? null,
+            confidenceDetail: (dto.confidenceDetail ?? undefined) as Prisma.InputJsonValue,
+            divisorUsed: billing.divisorUsed,
+            billingLCm: billing.billingLCm,
+            billingWCm: billing.billingWCm,
+            billingHCm: billing.billingHCm,
+            cbm: billing.cbm,
+            volumetricG: billing.volumetricG,
+            chargeableG: billing.chargeableG,
+            createdBy: user.sub,
+          },
+        });
+
+        await tx.package.update({
+          where: { id: dto.id },
+          data: { currentVersionId: version.id },
+        });
+
+        await recomputeShipmentTotals(tx, shipment.id);
+
+        const created = await tx.package.findUniqueOrThrow({
+          where: { id: dto.id },
+          include: PACKAGE_INCLUDE,
+        });
+        return { package: created, replayed: false };
+      },
+      { timeout: 15_000 },
+    );
   }
 
   // --- internals -----------------------------------------------------------
@@ -203,4 +260,14 @@ export class PackagesService {
       });
     }
   }
+}
+
+/** True when a Prisma error is a unique conflict on (shipment_id, package_number). */
+function isPackageNumberConflict(err: unknown): boolean {
+  if (!(err instanceof Prisma.PrismaClientKnownRequestError) || err.code !== 'P2002') {
+    return false;
+  }
+  const target = err.meta?.target;
+  const fields = Array.isArray(target) ? target.join(',') : String(target ?? '');
+  return fields.includes('package_number');
 }

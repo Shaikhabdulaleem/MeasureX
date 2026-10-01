@@ -10,11 +10,19 @@ import { CurrentUser, AuthUser } from '../auth/decorators/current-user.decorator
 export class PhotosController {
   constructor(private readonly photos: PhotosService) {}
 
-  /** POST /packages/{id}/photos — signed upload target. Any authenticated role. */
+  /**
+   * POST /packages/{id}/photos — signed upload target. Allowed for the worker
+   * who measured the package, or a TL/Admin whose scope covers its shipment.
+   */
   @Post('packages/:id/photos')
   @HttpCode(HttpStatus.CREATED)
-  createUploadTarget(@Param('id') id: string, @Body() dto: PhotoUploadRequestDto) {
-    return this.photos.createUploadTarget(id, dto);
+  createUploadTarget(
+    @Param('id') id: string,
+    @Body() dto: PhotoUploadRequestDto,
+    @CurrentUser() user: AuthUser,
+    @Req() req: Request,
+  ) {
+    return this.photos.createUploadTarget(id, dto, user, req.ip);
   }
 
   /** GET /photos/{id} — signed view URL. Team Leader / Admin only; view logged. */
