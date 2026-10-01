@@ -11,8 +11,31 @@ concurrency:
 
 jobs:
   node:
-    name: Lint & test (TypeScript workspaces)
+    name: Lint, typecheck & test (TypeScript)
     runs-on: ubuntu-latest
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: measurex
+          POSTGRES_PASSWORD: measurex
+          POSTGRES_DB: measurex
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U measurex"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://measurex:measurex@localhost:5432/measurex?schema=public
+      JWT_ACCESS_SECRET: ci-access-secret
+      JWT_REFRESH_SECRET: ci-refresh-secret
+      JWT_ACCESS_TTL: 15m
+      JWT_REFRESH_TTL: 12h
+
     steps:
       - uses: actions/checkout@v4
 
@@ -25,12 +48,16 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20
-          # Re-enable `cache: pnpm` once pnpm-lock.yaml is committed.
+          cache: pnpm
 
-      # Switch to `--frozen-lockfile` once pnpm-lock.yaml is committed
-      # (run `pnpm install` locally and commit the lockfile).
       - name: Install dependencies
-        run: pnpm install --no-frozen-lockfile
+        run: pnpm install --frozen-lockfile
+
+      - name: Generate Prisma client
+        run: pnpm --filter @measurex/api prisma:generate
+
+      - name: Apply database migrations
+        run: pnpm --filter @measurex/api prisma:migrate
 
       - name: Format check
         run: pnpm format
@@ -43,3 +70,26 @@ jobs:
 
       - name: Test
         run: pnpm test
+
+  flutter:
+    name: Analyze & test (Flutter)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/mobile
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Install dependencies (also generates localisations)
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze
+
+      - name: Test
+        run: flutter test

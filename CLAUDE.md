@@ -16,18 +16,18 @@ Phase C (AR + pallets + Aymakan integration). We are currently in **Milestone 0
 
 ## Stack
 
-| Layer | Choice |
-| --- | --- |
-| Mobile app | Flutter (Dart), Riverpod, Drift + SQLCipher, `mobile_scanner` (ML Kit), `flutter_blue_plus`, Kotlin plugin for Bluetooth Classic |
-| Measurement engine | C++17 + OpenCV (ArUco), called via Dart FFI; one codebase for Android + iOS |
-| Backend API | Node.js + NestJS (TypeScript), Prisma ORM, PostgreSQL 16 |
-| Background jobs | BullMQ + Redis (report exports, photo processing) |
-| File storage | S3-compatible object storage, private bucket, signed URLs only |
-| Web dashboard | React + Next.js (TypeScript), Tailwind, i18n with RTL |
-| Shared logic | `packages/shared` — TypeScript types + billing formulas (CBM, volumetric, chargeable) |
-| CI/CD | GitHub Actions: lint, tests, builds; Docker images for API and web |
-| Monitoring | Sentry (mobile, API, web); structured JSON logs |
-| Hosting | Cloud region inside Saudi Arabia (PDPL); managed Postgres + Redis |
+| Layer              | Choice                                                                                                                           |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------- |
+| Mobile app         | Flutter (Dart), Riverpod, Drift + SQLCipher, `mobile_scanner` (ML Kit), `flutter_blue_plus`, Kotlin plugin for Bluetooth Classic |
+| Measurement engine | C++17 + OpenCV (ArUco), called via Dart FFI; one codebase for Android + iOS                                                      |
+| Backend API        | Node.js + NestJS (TypeScript), Prisma ORM, PostgreSQL 16                                                                         |
+| Background jobs    | BullMQ + Redis (report exports, photo processing)                                                                                |
+| File storage       | S3-compatible object storage, private bucket, signed URLs only                                                                   |
+| Web dashboard      | React + Next.js (TypeScript), Tailwind, i18n with RTL                                                                            |
+| Shared logic       | `packages/shared` — TypeScript types + billing formulas (CBM, volumetric, chargeable)                                            |
+| CI/CD              | GitHub Actions: lint, tests, builds; Docker images for API and web                                                               |
+| Monitoring         | Sentry (mobile, API, web); structured JSON logs                                                                                  |
+| Hosting            | Cloud region inside Saudi Arabia (PDPL); managed Postgres + Redis                                                                |
 
 **Languages in the codebase:** Dart, TypeScript, C++17. Keep the surface small
 and well documented — there is no in-house dev team; Claude Code builds and the
@@ -47,7 +47,7 @@ measurex/
 ├── docs/
 │   ├── PRD.md           # Product requirements (v2.0) — source of truth
 │   ├── DECISIONS.md     # Decision log (PRD §2–14)
-│   ├── schema/          # Prisma schema (data model, PRD §12)
+│   ├── schema/          # Pointer → apps/api/prisma/schema.prisma (data model, §12)
 │   └── openapi.yaml     # Full API spec (PRD §13)
 ├── .github/workflows/   # CI
 ├── docker-compose.yml   # Postgres + Redis for local dev

@@ -6,4 +6,7 @@ coverage
 pnpm-lock.yaml
 apps/mobile
 packages/measure-core
+# Authored markdown/specs we don't want reflowed
+docs/PRD.md
+docs/DECISIONS.md
 docs/openapi.yaml

@@ -10,9 +10,9 @@
 //   - Displayed package values always come from measurement_version
 //     (current_version_id); versions are immutable.
 //
-// This is a design artifact under docs/. It is copied into apps/api and wired
-// to a datasource + generator when backend work begins (M0 "done when" only
-// requires the schema + formulas + CI, not a running API).
+// This is the canonical schema, wired to the API datasource. The `session`
+// table below is an implementation addition (not in PRD §12) backing refresh-
+// token rotation and logout revocation.
 
 generator client {
   provider = "prisma-client-js"
@@ -202,9 +202,29 @@ model User {
   events              MeasurementEvent[]
   auditEntries        AuditLog[]
   configUpdates       Config[]
+  sessions            Session[]
 
   @@index([homeBranchId])
   @@map("user")
+}
+
+/// Refresh-token session. Implementation addition (not PRD §12): one row per
+/// issued refresh token, enabling rotation and logout revocation. The raw
+/// refresh token is never stored — only an Argon2 hash of it.
+model Session {
+  id               String    @id @default(uuid()) @db.Uuid
+  userId           String    @map("user_id") @db.Uuid
+  refreshTokenHash String    @map("refresh_token_hash")
+  expiresAt        DateTime  @map("expires_at")
+  revokedAt        DateTime? @map("revoked_at")
+  installId        String?   @map("install_id")
+  createdAt        DateTime  @default(now()) @map("created_at")
+  updatedAt        DateTime  @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId])
+  @@map("session")
 }
 
 model Station {

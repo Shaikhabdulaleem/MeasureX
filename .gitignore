@@ -30,6 +30,8 @@ apps/mobile/android/.gradle/
 apps/mobile/android/local.properties
 *.g.dart
 *.freezed.dart
+# Generated localizations (produced by `flutter gen-l10n` / `flutter pub get`)
+apps/mobile/lib/src/l10n/app_localizations*.dart
 
 # C++ / measure-core
 packages/measure-core/build/

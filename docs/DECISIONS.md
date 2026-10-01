@@ -160,7 +160,9 @@ any transition not listed is rejected.
 
 ### Data model (PRD §12)
 - PostgreSQL, UUID PKs, `created_at`/`updated_at` on every table, **soft delete
-  only**, integers for mm/g. 15 tables (see [`schema/`](schema/)). A package's
+  only**, integers for mm/g. 15 tables (schema at
+  [`../apps/api/prisma/schema.prisma`](../apps/api/prisma/schema.prisma); a
+  `session` table is added for auth refresh/revocation). A package's
   displayed values always come from `current_version_id`; versions are immutable.
   **No consignee personal data in any table.**
 

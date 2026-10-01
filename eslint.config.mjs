@@ -23,6 +23,9 @@ export default tseslint.config(
     },
     rules: {
       '@typescript-eslint/no-explicit-any': 'error',
+      // TypeScript resolves identifiers; the core rule misfires on browser/node
+      // globals and JSX, so defer to the compiler.
+      'no-undef': 'off',
     },
   },
 );
