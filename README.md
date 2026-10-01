@@ -49,12 +49,12 @@ Health check: `GET http://localhost:3000/api/v1/health`.
 
 **Seeded logins** (all start with a forced password change on first login):
 
-| Employee ID | Role | Initial password |
-| --- | --- | --- |
-| `ADMIN001` | admin | `ChangeMe123!` |
-| `TL001` | team_leader | `ChangeMe123!` |
-| `LAB001` | labour | `ChangeMe123!` |
-| `LAB002` | labour | `ChangeMe123!` |
+| Employee ID | Role        | Initial password |
+| ----------- | ----------- | ---------------- |
+| `ADMIN001`  | admin       | `ChangeMe123!`   |
+| `TL001`     | team_leader | `ChangeMe123!`   |
+| `LAB001`    | labour      | `ChangeMe123!`   |
+| `LAB002`    | labour      | `ChangeMe123!`   |
 
 ## 3. Web dashboard
 
