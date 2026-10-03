@@ -40,6 +40,14 @@ class AuthUser {
       mustChangePassword: json['mustChangePassword'] as bool? ?? false,
     );
   }
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'employeeId': employeeId,
+        'name': name,
+        'role': role,
+        'mustChangePassword': mustChangePassword,
+      };
 }
 
 class TokenPair {
@@ -220,6 +228,35 @@ class ApiClient {
     if (res.statusCode != 200 && res.statusCode != 204) {
       throw ApiException(res.statusCode, 'UPLOAD_FAILED', 'Photo upload failed');
     }
+  }
+
+  /// Upload up to 50 offline packages in one batch (PRD §10, §13). Returns a
+  /// per-item result; the client UUID is the idempotency key, so replays are
+  /// safe. [packages] are raw JSON maps (built from the local DB).
+  Future<List<SyncItemResult>> syncBatch(
+    String token,
+    List<Map<String, dynamic>> packages,
+  ) async {
+    final res = await _client.post(
+      _uri('/sync/batch'),
+      headers: _authHeaders(token),
+      body: jsonEncode({'packages': packages}),
+    );
+    if (res.statusCode != 200) throw _error(res);
+    final body = jsonDecode(res.body) as Map<String, dynamic>;
+    return ((body['results'] as List<dynamic>?) ?? [])
+        .map((e) => SyncItemResult.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Upload telemetry events (append-only, replay-safe). Accepts 202.
+  Future<void> postEvents(String token, List<Map<String, dynamic>> events) async {
+    final res = await _client.post(
+      _uri('/events/batch'),
+      headers: _authHeaders(token),
+      body: jsonEncode({'events': events}),
+    );
+    if (res.statusCode != 202 && res.statusCode != 200) throw _error(res);
   }
 
   Future<ShipmentModel> completeShipment(String token, String awb) async {
@@ -556,6 +593,36 @@ class AwbLookupResult {
             ? null
             : ShipmentDetail.fromJson(json['shipment'] as Map<String, dynamic>),
       );
+}
+
+/// Per-item result from POST /sync/batch (PRD §8 sync states).
+class SyncItemResult {
+  SyncItemResult({
+    required this.id,
+    required this.status,
+    this.packageNumber,
+    this.errorCode,
+    this.errorMessage,
+  });
+
+  final String id;
+
+  /// One of: synced | conflict | failed.
+  final String status;
+  final int? packageNumber;
+  final String? errorCode;
+  final String? errorMessage;
+
+  factory SyncItemResult.fromJson(Map<String, dynamic> json) {
+    final error = json['error'] as Map<String, dynamic>?;
+    return SyncItemResult(
+      id: json['id'] as String,
+      status: json['status'] as String,
+      packageNumber: (json['packageNumber'] as num?)?.toInt(),
+      errorCode: error?['code'] as String?,
+      errorMessage: error?['message'] as String?,
+    );
+  }
 }
 
 class PhotoUploadTarget {

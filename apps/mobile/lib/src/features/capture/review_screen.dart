@@ -81,7 +81,10 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
-          builder: (_) => PackageSavedScreen(packageNumber: pkg.packageNumber ?? 0),
+          builder: (_) => PackageSavedScreen(
+            displayNumber: pkg.serverNumber ?? pkg.provisionalNumber,
+            provisional: pkg.serverNumber == null,
+          ),
         ),
       );
     } catch (_) {

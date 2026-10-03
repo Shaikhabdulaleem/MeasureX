@@ -1,15 +1,24 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../l10n/app_localizations.dart';
+import '../sync/provisional.dart';
 import 'capture_controller.dart';
 import 'manual_dimensions_screen.dart';
 import 'shipment_summary_screen.dart';
-import 'widgets.dart';
 
 /// "Package saved" → Add another package / Complete shipment (PRD §5 step 10).
 class PackageSavedScreen extends ConsumerStatefulWidget {
-  const PackageSavedScreen({super.key, required this.packageNumber});
-  final int packageNumber;
+  const PackageSavedScreen({
+    super.key,
+    required this.displayNumber,
+    this.provisional = true,
+  });
+
+  /// Server number when synced, else the provisional number (PRD §10 rule 2).
+  final int displayNumber;
+
+  /// True while the number is still provisional (shown with a trailing "*").
+  final bool provisional;
 
   @override
   ConsumerState<PackageSavedScreen> createState() => _PackageSavedScreenState();
@@ -54,7 +63,7 @@ class _PackageSavedScreenState extends ConsumerState<PackageSavedScreen> {
             Icon(Icons.check_circle, color: Theme.of(context).colorScheme.primary, size: 72),
             const SizedBox(height: 16),
             Text(
-              '${pkgLabel(l10n, widget.packageNumber)} — ${l10n.packageSaved}',
+              '${formatPackageLabel(serverNumber: widget.provisional ? null : widget.displayNumber, provisionalNumber: widget.displayNumber)} — ${l10n.packageSaved}',
               textAlign: TextAlign.center,
               style: Theme.of(context).textTheme.titleLarge,
             ),

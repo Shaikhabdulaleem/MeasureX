@@ -1,11 +1,44 @@
+import 'dart:io';
+
+import 'package:drift/drift.dart' show Value;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
 import 'package:uuid/uuid.dart';
+
 import '../../core/api_client.dart';
+import '../../core/db/app_database.dart';
+import '../../core/image_util.dart';
 import '../auth/auth_controller.dart';
+import '../sync/sync_providers.dart';
 
 const _uuid = Uuid();
 
-/// A package saved during the current capture session (for the summary screen).
+/// A package saved locally during this capture session (for the summary screen).
+/// Offline the server number is unknown, so the provisional number is shown as
+/// "PKG 02*" until sync replaces it (PRD §10 rule 2).
+class SavedPackageResult {
+  const SavedPackageResult({
+    required this.id,
+    required this.awb,
+    required this.provisionalNumber,
+    this.serverNumber,
+    this.lengthMm = 0,
+    this.widthMm = 0,
+    this.heightMm = 0,
+    this.actualWeightG,
+  });
+
+  final String id;
+  final String awb;
+  final int provisionalNumber;
+  final int? serverNumber;
+  final int lengthMm;
+  final int widthMm;
+  final int heightMm;
+  final int? actualWeightG;
+}
+
 class CaptureState {
   const CaptureState({
     this.awb,
@@ -17,13 +50,13 @@ class CaptureState {
   final String? awb;
   final String? shipmentId;
   final int nextPackageNumber;
-  final List<PackageModel> savedPackages;
+  final List<SavedPackageResult> savedPackages;
 
   CaptureState copyWith({
     String? awb,
     String? shipmentId,
     int? nextPackageNumber,
-    List<PackageModel>? savedPackages,
+    List<SavedPackageResult>? savedPackages,
   }) {
     return CaptureState(
       awb: awb ?? this.awb,
@@ -52,13 +85,14 @@ class CaptureController extends StateNotifier<CaptureState> {
   final Ref _ref;
 
   ApiClient get _api => _ref.read(apiClientProvider);
-  String get _token {
-    final token = _ref.read(authControllerProvider).accessToken;
-    if (token == null) throw StateError('not authenticated');
-    return token;
-  }
+  AppDatabase get _db => _ref.read(appDatabaseProvider);
+  String? get _token => _ref.read(authControllerProvider).accessToken;
 
-  Future<AwbLookupResult> lookup(String awb) => _api.lookupAwb(_token, awb);
+  Future<AwbLookupResult> lookup(String awb) {
+    final token = _token;
+    if (token == null) throw StateError('not authenticated');
+    return _api.lookupAwb(token, awb);
+  }
 
   /// Begin (or resume) a capture session for an AWB.
   void startSession(String awb, int nextPackageNumber, {String? shipmentId}) {
@@ -70,10 +104,12 @@ class CaptureController extends StateNotifier<CaptureState> {
     );
   }
 
-  /// Save a manually-measured package: create it, then upload its photo.
-  /// Weight (PRD §9): [weightSource] is `none`, `scale` (with [scaleId]) or
-  /// `manual` (Team Leader / Admin, with [weightReason]).
-  Future<PackageModel> savePackage({
+  /// Save a package locally (PRD §10: the phone is the first place every record
+  /// is saved). The photo is compressed to a file; the package + photo + a
+  /// sync-queue record are written atomically, then the sync engine is nudged.
+  /// No network call happens here — it returns immediately with a provisional
+  /// number and the engine syncs in the background.
+  Future<SavedPackageResult> savePackage({
     required int lengthMm,
     required int widthMm,
     required int heightMm,
@@ -89,43 +125,105 @@ class CaptureController extends StateNotifier<CaptureState> {
 
     final id = _uuid.v4();
     final idempotencyKey = _uuid.v4();
+    final provisionalNumber = await _db.nextProvisionalNumber(awb);
+    final deviceId = await _installId();
 
-    final pkg = await _api.createPackage(
-      _token,
-      awb,
+    // Compress and persist the photo to app-private storage (PRD §6, §10).
+    final compressed = compressForUpload(photoBytes);
+    final photoPath = await _writePhoto(id, compressed);
+
+    await _db.savePackageForSync(
+      awb: awb,
+      photoPath: photoPath,
+      photoBytes: compressed.length,
+      package: LocalPackagesCompanion.insert(
+        id: id,
+        awb: awb,
+        provisionalNumber: provisionalNumber,
+        lengthMm: lengthMm,
+        widthMm: widthMm,
+        heightMm: heightMm,
+        idempotencyKey: idempotencyKey,
+        confirmedAt: DateTime.now().toUtc(),
+        weightSource: Value(weightSource),
+        weightReason: Value(weightReason),
+        actualWeightG: Value(actualWeightG),
+        scaleId: Value(scaleId),
+        deviceId: Value(deviceId),
+      ),
+    );
+
+    // Nudge the engine so it syncs promptly when online.
+    _ref.read(syncEngineProvider).runNow();
+
+    final result = SavedPackageResult(
       id: id,
+      awb: awb,
+      provisionalNumber: provisionalNumber,
       lengthMm: lengthMm,
       widthMm: widthMm,
       heightMm: heightMm,
-      weightSource: weightSource,
       actualWeightG: actualWeightG,
-      scaleId: scaleId,
-      weightReason: weightReason,
-      confirmedAt: DateTime.now().toUtc().toIso8601String(),
-      idempotencyKey: idempotencyKey,
     );
-
-    // Package data first, then the photo (PRD §10 upload order).
-    final target = await _api.requestPhotoUpload(
-      _token,
-      pkg.id,
-      contentType: contentType,
-      bytes: photoBytes.length,
-    );
-    await _api.uploadPhotoBytes(target, photoBytes);
-
     state = state.copyWith(
-      shipmentId: pkg.shipmentId,
-      nextPackageNumber: (pkg.packageNumber ?? state.nextPackageNumber) + 1,
-      savedPackages: [...state.savedPackages, pkg],
+      nextPackageNumber: provisionalNumber + 1,
+      savedPackages: [...state.savedPackages, result],
     );
-    return pkg;
+    return result;
   }
 
+  /// Complete the shipment. Local-first: build the summary from saved packages;
+  /// best-effort tell the server when online (ignored offline — the server
+  /// auto-completes after idle, and package sync is unaffected).
   Future<ShipmentModel> complete() async {
     final awb = state.awb;
     if (awb == null) throw StateError('no active AWB');
-    return _api.completeShipment(_token, awb);
+
+    final token = _token;
+    if (token != null) {
+      try {
+        return await _api.completeShipment(token, awb);
+      } catch (_) {
+        // Offline or transient — fall through to a local summary.
+      }
+    }
+    return _localSummary(awb);
+  }
+
+  ShipmentModel _localSummary(String awb) {
+    var actualG = 0;
+    for (final p in state.savedPackages) {
+      actualG += p.actualWeightG ?? 0;
+    }
+    // Volumetric/cbm previews are recomputed on the dashboard from the server
+    // figures; the offline summary shows the piece count and actual weight.
+    return ShipmentModel(
+      id: awb,
+      awb: awb,
+      status: 'completed',
+      totals: ShipmentTotals(
+        pieces: state.savedPackages.length,
+        cbm: 0,
+        actualG: actualG,
+        volumetricG: 0,
+        chargeableG: 0,
+      ),
+    );
+  }
+
+  Future<String> _writePhoto(String id, List<int> bytes) async {
+    final dir = await getApplicationDocumentsDirectory();
+    final photos = Directory(p.join(dir.path, 'photos'));
+    if (!await photos.exists()) await photos.create(recursive: true);
+    final file = File(p.join(photos.path, '$id.jpg'));
+    await file.writeAsBytes(bytes, flush: true);
+    return file.path;
+  }
+
+  Future<String?> _installId() async {
+    // Device registration (M5) will supply a stable install id; until then the
+    // deviceId is left null, which the server treats as unscoped.
+    return null;
   }
 
   void reset() => state = const CaptureState();

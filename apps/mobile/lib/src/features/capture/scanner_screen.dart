@@ -5,6 +5,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import '../../l10n/app_localizations.dart';
 import '../../core/api_client.dart';
+import '../../core/connectivity.dart';
+import '../sync/offline_banner.dart';
+import '../sync/sync_providers.dart';
 import 'capture_controller.dart';
 import 'manual_dimensions_screen.dart';
 import 'previous_result_sheet.dart';
@@ -63,6 +66,16 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
 
   Future<void> _handleAwb(String awb) async {
     final l10n = AppLocalizations.of(context);
+
+    // Offline: the cross-device history check needs connection (PRD §10). Skip
+    // it, warn that previous measurements can't be verified, and continue with
+    // a local provisional number.
+    final online = ref.read(onlineProvider).valueOrNull ?? true;
+    if (!online) {
+      await _offlineContinue(awb);
+      return;
+    }
+
     try {
       final result = await ref.read(captureControllerProvider.notifier).lookup(awb);
       if (!mounted) return;
@@ -84,12 +97,32 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
       );
       await _resume();
     } on ApiException catch (e) {
-      _showError(e.code == 'INVALID_AWB' ? l10n.invalidAwbFormat : l10n.lookupFailed);
-      await _resume();
+      if (e.code == 'INVALID_AWB') {
+        _showError(l10n.invalidAwbFormat);
+        await _resume();
+      } else {
+        // A reachable server returned an error other than bad AWB — treat the
+        // lookup as unavailable and continue offline-style.
+        await _offlineContinue(awb);
+      }
     } catch (_) {
-      _showError(l10n.lookupFailed);
-      await _resume();
+      // Network error → effectively offline; continue with a local number.
+      await _offlineContinue(awb);
     }
+  }
+
+  /// Continue capture without the cross-device check (offline / lookup down).
+  Future<void> _offlineContinue(String awb) async {
+    final next = await ref.read(appDatabaseProvider).nextProvisionalNumber(awb);
+    ref.read(captureControllerProvider.notifier).startSession(awb, next);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text(kOfflineCannotVerify)),
+    );
+    await Navigator.of(context).push(
+      MaterialPageRoute(builder: (_) => const ManualDimensionsScreen()),
+    );
+    await _resume();
   }
 
   Future<void> _resume() async {

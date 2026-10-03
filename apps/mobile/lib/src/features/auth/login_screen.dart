@@ -40,8 +40,14 @@ class _LoginScreenState extends ConsumerState<LoginScreen> {
       _busy = true;
       _error = null;
     });
-    final code =
-        await ref.read(authControllerProvider.notifier).login(_employeeId.text, _password.text);
+    final auth = ref.read(authControllerProvider.notifier);
+    var code = await auth.login(_employeeId.text, _password.text);
+    // A network failure (not bad credentials) → try offline login for the last
+    // device user within the 12 h + 12 h window (PRD §10 rule 6).
+    if (code == 'ERROR') {
+      final offline = await auth.offlineLogin(_employeeId.text, _password.text);
+      if (offline == null) code = null;
+    }
     if (!mounted) return;
     setState(() {
       _busy = false;
