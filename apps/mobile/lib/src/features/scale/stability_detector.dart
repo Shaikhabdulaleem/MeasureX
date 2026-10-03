@@ -52,6 +52,12 @@ class StabilityDetector {
   /// can never carry over into a new session.
   void reset() => _window.clear();
 
+  /// Mark the current stable value as consumed after it is saved to a package
+  /// (PRD §9). Clearing the window means a NEW stable reading is required before
+  /// another save: for a streaming scale a fresh window must form; for a
+  /// one-shot scale a new line (or a drop below minWeightG and settling again).
+  void consume() => _window.clear();
+
   /// Feed a reading. [now] defaults to the reading's timestamp; pass it to
   /// evaluate staleness against the current clock.
   StabilityResult add(ScaleReading reading, {DateTime? now}) {

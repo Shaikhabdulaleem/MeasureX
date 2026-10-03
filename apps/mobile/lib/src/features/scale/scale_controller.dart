@@ -209,6 +209,21 @@ class ScaleController extends StateNotifier<ScaleRuntime> {
     }
   }
 
+  /// Consume the current stable weight after it has been saved to a package
+  /// (PRD §9): clear the value and require a fresh stable reading before the
+  /// next capture. No-op when no scale is active.
+  void consumeStableWeight() {
+    _detector?.consume();
+    if (_detector != null) {
+      state = state.copyWith(
+        state: ScaleState.reading,
+        stable: false,
+        stale: false,
+        clearGrams: true,
+      );
+    }
+  }
+
   Future<void> tare() async => _adapter?.tare();
 
   Future<void> disconnect() async {

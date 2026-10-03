@@ -13,6 +13,7 @@ final syncEngineProvider = Provider<SyncEngine>((ref) {
     db: ref.watch(appDatabaseProvider),
     api: ref.watch(apiClientProvider),
     token: () => ref.read(authControllerProvider).accessToken,
+    userId: () => ref.read(authControllerProvider).user?.id,
   );
   engine.start();
   ref.onDispose(engine.stop);

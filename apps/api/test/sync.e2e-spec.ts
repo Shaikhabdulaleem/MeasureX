@@ -51,6 +51,15 @@ function syncBatch(packages: Array<Record<string, unknown>>) {
     .send({ packages });
 }
 
+/** Online single-create (append path), for the "two phones online" case. */
+function createPackage(awb: string, body: Record<string, unknown>) {
+  return request(server)
+    .post(`/api/v1/shipments/${awb}/packages`)
+    .set('Authorization', `Bearer ${labour.accessToken}`)
+    .set('Idempotency-Key', randomUUID())
+    .send(body);
+}
+
 async function createDevice(): Promise<string> {
   const id = randomUUID();
   await prisma.device.create({
@@ -162,10 +171,13 @@ describe('POST /sync/batch — confirmed_at renumbering', () => {
 });
 
 describe('POST /sync/batch — possible duplicate across devices', () => {
-  it('keeps both packages and flags the shipment for the Team Leader', async () => {
+  it('flags two devices that measured the same AWB while offline', async () => {
+    // Both confirmed in the past (offline), then synced now: each item is
+    // received after the other was confirmed → concurrent offline capture.
     const awb = randomAwb();
-    const a = item(awb, { deviceId: deviceA });
-    const b = item(awb, { deviceId: deviceB });
+    const past = new Date(Date.now() - 10 * 60 * 1000).toISOString();
+    const a = item(awb, { deviceId: deviceA, confirmedAt: past });
+    const b = item(awb, { deviceId: deviceB, confirmedAt: past });
 
     const res = await syncBatch([a, b]).expect(200);
     const statuses = (res.body.results as ResultRow[]).map((r) => r.status);
@@ -178,12 +190,89 @@ describe('POST /sync/batch — possible duplicate across devices', () => {
     expect(detail.body.packages).toHaveLength(2);
     expect(detail.body.flags).toContain('possible_duplicate');
 
-    // The server's sync status echoes the conflict for the device.
     const status = await request(server)
       .get(`/api/v1/sync/status?deviceId=${deviceA}`)
       .set('Authorization', `Bearer ${labour.accessToken}`)
       .expect(200);
     expect(status.body.conflict).toBeGreaterThanOrEqual(1);
+  });
+
+  it('does NOT flag two phones adding online (received before the next confirm)', async () => {
+    // Online append path: each package is received as it is confirmed, so no
+    // package predates another's confirmation.
+    const awb = randomAwb();
+    await createPackage(awb, {
+      id: randomUUID(),
+      ...WORKED,
+      method: 'manual',
+      weightSource: 'none',
+      deviceId: deviceA,
+      confirmedAt: new Date().toISOString(),
+    }).expect(201);
+    await createPackage(awb, {
+      id: randomUUID(),
+      ...WORKED,
+      method: 'manual',
+      weightSource: 'none',
+      deviceId: deviceB,
+      confirmedAt: new Date().toISOString(),
+    }).expect(201);
+
+    const detail = await request(server)
+      .get(`/api/v1/shipments/${awb}`)
+      .set('Authorization', `Bearer ${labour.accessToken}`)
+      .expect(200);
+    expect(detail.body.packages).toHaveLength(2);
+    expect(detail.body.flags).not.toContain('possible_duplicate');
+  });
+});
+
+describe('POST /sync/batch — shared-phone ownership', () => {
+  it('rejects an item owned by a different user (OWNER_MISMATCH)', async () => {
+    const awb = randomAwb();
+    const mine = item(awb, { measuredBy: labour.userId });
+    const theirs = item(awb, { measuredBy: randomUUID() });
+
+    const res = await syncBatch([mine, theirs]).expect(200);
+    const byId: Record<string, ResultRow> = Object.fromEntries(
+      (res.body.results as ResultRow[]).map((r) => [r.id, r]),
+    );
+    expect(byId[mine.id].status).toBe('synced');
+    expect(byId[theirs.id].status).toBe('failed');
+    expect(byId[theirs.id].error?.code).toBe('OWNER_MISMATCH');
+  });
+});
+
+describe('POST /sync/batch — renumber skips void/superseded numbers', () => {
+  it('never reassigns a voided package number', async () => {
+    const awb = randomAwb();
+    // Two packages: PKG 01 and PKG 02.
+    const t1 = new Date('2026-10-03T09:00:00.000Z').toISOString();
+    const t2 = new Date('2026-10-03T09:01:00.000Z').toISOString();
+    const first = await syncBatch([item(awb, { confirmedAt: t1 })]).expect(200);
+    const second = await syncBatch([item(awb, { confirmedAt: t2 })]).expect(200);
+    const p2Id = second.body.results[0].id as string;
+    expect(first.body.results[0].packageNumber).toBe(1);
+    expect(second.body.results[0].packageNumber).toBe(2);
+
+    // Void PKG 02 directly (keeps its number reserved, PRD §8).
+    await prisma.package.update({ where: { id: p2Id }, data: { status: 'void' } });
+
+    // A new package must skip 2 and take 3.
+    const t3 = new Date('2026-10-03T09:02:00.000Z').toISOString();
+    const third = await syncBatch([item(awb, { confirmedAt: t3 })]).expect(200);
+    expect(third.body.results[0].packageNumber).toBe(3);
+
+    // PKG 01 is unchanged.
+    const detail = await request(server)
+      .get(`/api/v1/shipments/${awb}`)
+      .set('Authorization', `Bearer ${labour.accessToken}`)
+      .expect(200);
+    const active = (detail.body.packages as Array<{ packageNumber: number; status: string }>)
+      .filter((p) => p.status === 'active')
+      .map((p) => p.packageNumber)
+      .sort((a, b) => a - b);
+    expect(active).toEqual([1, 3]);
   });
 });
 

@@ -63,6 +63,21 @@ export class SyncService {
     user: AuthUser,
     ip?: string,
   ): Promise<SyncItemResult> {
+    // Shared-phone guard (PRD §3): a device may only upload its logged-in
+    // user's own records. An item owned by someone else is rejected, never
+    // stored under the caller.
+    if (item.measuredBy && item.measuredBy !== user.sub) {
+      return {
+        id: item.id,
+        status: 'failed',
+        packageNumber: null,
+        error: {
+          code: 'OWNER_MISMATCH',
+          message: 'This package was measured by a different user',
+        },
+      };
+    }
+
     try {
       // The client UUID is the idempotency key for a synced package: resending
       // never duplicates (PRD §10 rule 1).

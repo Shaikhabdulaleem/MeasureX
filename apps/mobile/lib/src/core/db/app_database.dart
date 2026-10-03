@@ -10,6 +10,29 @@ import 'package:sqlcipher_flutter_libs/sqlcipher_flutter_libs.dart';
 
 part 'app_database.g.dart';
 
+/// A sync-queue row joined with its package's owner, for the Sync Queue UI.
+class QueueRow {
+  const QueueRow({
+    required this.packageId,
+    required this.status,
+    required this.awb,
+    required this.provisionalNumber,
+    this.serverNumber,
+    this.lastError,
+    this.ownerUserId,
+    this.ownerName,
+  });
+
+  final String packageId;
+  final String status;
+  final String awb;
+  final int provisionalNumber;
+  final int? serverNumber;
+  final String? lastError;
+  final String? ownerUserId;
+  final String? ownerName;
+}
+
 /// Sync-record states (PRD §8 sync state machine). Stored as text.
 class SyncState {
   static const pending = 'pending';
@@ -49,6 +72,10 @@ class LocalPackages extends Table {
   TextColumn get method => text().withDefault(const Constant('manual'))();
   TextColumn get confidence => text().nullable()();
   TextColumn get deviceId => text().nullable()();
+  // Shared phones (PRD §3): the user who measured this package. The sync engine
+  // only uploads the logged-in user's own records; others stay on the device.
+  TextColumn get measuredByUserId => text().nullable()();
+  TextColumn get measuredByName => text().nullable()();
   TextColumn get idempotencyKey => text()();
   DateTimeColumn get confirmedAt => dateTime()();
   DateTimeColumn get createdAt => dateTime().withDefault(currentDateAndTime)();
@@ -66,6 +93,10 @@ class LocalPhotos extends Table {
   TextColumn get filePath => text()();
   IntColumn get bytes => integer().withDefault(const Constant(0))();
   BoolColumn get uploaded => boolean().withDefault(const Constant(false))();
+  // The server photo id, set after the first upload-target request. On retry we
+  // refresh the URL for THIS id instead of creating a new photo row (PRD §10).
+  TextColumn get photoId => text().nullable()();
+  TextColumn get measuredByUserId => text().nullable()();
 
   @override
   Set<Column> get primaryKey => {packageId};
@@ -79,6 +110,7 @@ class LocalEvents extends Table {
   TextColumn get awb => text().nullable()();
   TextColumn get payloadJson => text().nullable()();
   TextColumn get deviceId => text().nullable()();
+  TextColumn get measuredByUserId => text().nullable()();
   DateTimeColumn get occurredAt => dateTime()();
   BoolColumn get synced => boolean().withDefault(const Constant(false))();
 
@@ -115,7 +147,22 @@ class AppDatabase extends _$AppDatabase {
   factory AppDatabase.memory() => AppDatabase(NativeDatabase.memory());
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
+
+  @override
+  MigrationStrategy get migration => MigrationStrategy(
+        onCreate: (m) => m.createAll(),
+        onUpgrade: (m, from, to) async {
+          if (from < 2) {
+            // Shared-phone ownership + photo id / retry support (PRD §3, §10).
+            await m.addColumn(localPackages, localPackages.measuredByUserId);
+            await m.addColumn(localPackages, localPackages.measuredByName);
+            await m.addColumn(localPhotos, localPhotos.photoId);
+            await m.addColumn(localPhotos, localPhotos.measuredByUserId);
+            await m.addColumn(localEvents, localEvents.measuredByUserId);
+          }
+        },
+      );
 
   // --- writes --------------------------------------------------------------
 
@@ -136,6 +183,7 @@ class AppDatabase extends _$AppDatabase {
           packageId: package.id.value,
           filePath: photoPath,
           bytes: Value(photoBytes),
+          measuredByUserId: package.measuredByUserId,
         ),
         mode: InsertMode.insertOrIgnore,
       );
@@ -161,20 +209,27 @@ class AppDatabase extends _$AppDatabase {
     return (select(syncQueue)..where((r) => r.status.equals(status))).get();
   }
 
-  /// Packages that are due to be attempted now: pending, or failed whose
-  /// backoff window has elapsed.
-  Future<List<LocalPackage>> packagesDue(DateTime now) async {
+  /// Packages owned by [userId] that are due to be attempted now: pending, or
+  /// failed whose backoff window has elapsed. Only the logged-in user's own
+  /// records are uploaded (PRD §3 shared phones).
+  Future<List<LocalPackage>> packagesDueForUser(DateTime now, String userId) async {
     final q = select(localPackages).join([
       innerJoin(syncQueue, syncQueue.packageId.equalsExp(localPackages.id)),
     ])
       ..where(
-        syncQueue.status.equals(SyncState.pending) |
-            (syncQueue.status.equals(SyncState.failed) &
-                (syncQueue.nextAttemptAt.isSmallerOrEqualValue(now) |
-                    syncQueue.nextAttemptAt.isNull())),
+        localPackages.measuredByUserId.equals(userId) &
+            (syncQueue.status.equals(SyncState.pending) |
+                (syncQueue.status.equals(SyncState.failed) &
+                    (syncQueue.nextAttemptAt.isSmallerOrEqualValue(now) |
+                        syncQueue.nextAttemptAt.isNull()))),
       );
     final rows = await q.get();
     return rows.map((r) => r.readTable(localPackages)).toList();
+  }
+
+  Future<void> setPhotoId(String packageId, String photoId) {
+    return (update(localPhotos)..where((p) => p.packageId.equals(packageId)))
+        .write(LocalPhotosCompanion(photoId: Value(photoId)));
   }
 
   Future<LocalPhoto?> photoFor(String packageId) {
@@ -309,6 +364,30 @@ class AppDatabase extends _$AppDatabase {
 
   /// Reactive stream of all sync records, for the banner/queue counts.
   Stream<List<SyncQueueData>> watchQueue() => select(syncQueue).watch();
+
+  /// Reactive queue rows joined with each package's owner, for the Sync Queue
+  /// screen ("waiting for <name>" when owned by another user, PRD §3).
+  Stream<List<QueueRow>> watchQueueDetailed() {
+    final q = select(syncQueue).join([
+      innerJoin(localPackages, localPackages.id.equalsExp(syncQueue.packageId)),
+    ]);
+    return q.watch().map((rows) {
+      return rows.map((r) {
+        final s = r.readTable(syncQueue);
+        final p = r.readTable(localPackages);
+        return QueueRow(
+          packageId: s.packageId,
+          status: s.status,
+          lastError: s.lastError,
+          ownerUserId: p.measuredByUserId,
+          ownerName: p.measuredByName,
+          awb: p.awb,
+          provisionalNumber: p.provisionalNumber,
+          serverNumber: p.serverPackageNumber,
+        );
+      }).toList();
+    });
+  }
 
   Future<bool> hasUnsynced() async {
     final pending = await countByStatus(SyncState.pending);

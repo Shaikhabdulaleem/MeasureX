@@ -87,6 +87,43 @@ export class PhotosService {
   }
 
   /**
+   * POST /packages/{id}/photos is called ONCE per photo (creating the row +
+   * returning the first upload URL). On a retry the client calls this instead,
+   * passing the stored photoId, to get a FRESH signed URL for the SAME object —
+   * no second photo row is created (avoids orphans, PRD §10). Same attach
+   * authorisation as the create.
+   */
+  async refreshUploadUrl(photoId: string, user: AuthUser, ip?: string) {
+    const photo = await this.prisma.photo.findFirst({
+      where: { id: photoId, deletedAt: null },
+      include: { package: { select: { measuredBy: true, shipmentId: true } } },
+    });
+    if (!photo) {
+      throw new NotFoundException({ code: 'NOT_FOUND', message: 'Photo not found' });
+    }
+    await this.assertCanAttach(photo.package.measuredBy, photo.package.shipmentId, user);
+
+    await this.audit.record({
+      userId: user.sub,
+      role: user.role as never,
+      entity: 'photo',
+      entityId: photo.id,
+      action: 'photo_upload_url_refreshed',
+      ip,
+    });
+
+    const target = await this.storage.presignUpload(photo.storageKey, 'image/jpeg');
+    return {
+      photoId: photo.id,
+      uploadUrl: target.url,
+      method: target.method,
+      headers: target.headers,
+      expiresAt: target.expiresAt,
+      photo: serializePhoto(photo),
+    };
+  }
+
+  /**
    * GET /photos/{id} — short-lived signed view URL. Team Leader / Admin only
    * (enforced at the controller) AND only for a photo whose shipment is within
    * the caller's branch scope (PRD §3, §6). Out of scope → 404. The view is

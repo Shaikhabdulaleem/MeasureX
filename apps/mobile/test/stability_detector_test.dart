@@ -85,6 +85,52 @@ void main() {
     expect(after.stable, isFalse);
   });
 
+  group('consume: a stable weight is used once per package (PRD §9)', () {
+    test('streaming — after consume a fresh window is required', () {
+      final d = StabilityDetector(thresholds);
+      final stable = feed(d, [4800, 4805, 4798, 4802, 4801]);
+      expect(stable.stable, isTrue);
+
+      d.consume(); // package saved → value consumed
+
+      // A single new reading is not enough; the window must refill.
+      final one = d.add(
+        ScaleReading(grams: 4801, timestamp: t0.add(const Duration(seconds: 10))),
+        now: t0.add(const Duration(seconds: 10)),
+      );
+      expect(one.stable, isFalse);
+
+      // A full fresh window becomes stable again.
+      final again = feed(
+        d,
+        [4800, 4805, 4798, 4802, 4801],
+        start: t0.add(const Duration(seconds: 11)),
+      );
+      expect(again.stable, isTrue);
+    });
+
+    test('one-shot — after consume a new line is required', () {
+      const oneShot = ScaleThresholds(streaming: false);
+      final d = StabilityDetector(oneShot);
+      final first = d.add(ScaleReading(grams: 12340, timestamp: t0), now: t0);
+      expect(first.stable, isTrue);
+
+      d.consume();
+      // No new line yet → nothing stable.
+      final evalAfter = d.evaluate(t0.add(const Duration(seconds: 2)));
+      expect(evalAfter.stable, isFalse);
+      expect(evalAfter.grams, isNull);
+
+      // A new line re-establishes a stable value.
+      final next = d.add(
+        ScaleReading(grams: 9000, timestamp: t0.add(const Duration(seconds: 3))),
+        now: t0.add(const Duration(seconds: 3)),
+      );
+      expect(next.stable, isTrue);
+      expect(next.grams, 9000);
+    });
+  });
+
   group('device stability flag (PRD §9)', () {
     test('a single "ST" reading is stable immediately (12340 g)', () {
       final d = StabilityDetector(thresholds);

@@ -347,6 +347,26 @@ paths:
         '403': { $ref: '#/components/responses/Forbidden' }
         '404': { $ref: '#/components/responses/NotFound' }
 
+  /photos/{id}/upload-url:
+    post:
+      tags: [Photos]
+      summary: Fresh signed upload URL for an existing photo (retry path)
+      description: >
+        Returns a new signed PUT URL for a photo already created by
+        POST /packages/{id}/photos — used when a sync retry needs a fresh URL
+        for the SAME object. No new photo row is created. Allowed for the
+        measurer or a scoped Team Leader / Admin.
+      parameters:
+        - $ref: '#/components/parameters/IdPath'
+      responses:
+        '200':
+          description: Signed upload target for the existing photo
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/PhotoUploadTarget' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /photos/{id}:
     get:
       tags: [Photos]
@@ -1301,6 +1321,12 @@ components:
           required: [awb]
           properties:
             awb: { type: string, example: AY20435032852 }
+            measuredBy:
+              type: string
+              format: uuid
+              description: >
+                The user who measured this package on the device. The server
+                rejects an item whose owner is not the caller (OWNER_MISMATCH).
     CorrectionCreate:
       type: object
       required: [reason]

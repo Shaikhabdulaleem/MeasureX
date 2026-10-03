@@ -25,6 +25,16 @@ export class PhotosController {
     return this.photos.createUploadTarget(id, dto, user, req.ip);
   }
 
+  /**
+   * POST /photos/{id}/upload-url — a fresh signed PUT URL for an EXISTING photo
+   * (retry path; no new row). Allowed for the measurer or a scoped TL/Admin.
+   */
+  @Post('photos/:id/upload-url')
+  @HttpCode(HttpStatus.OK)
+  refreshUploadUrl(@Param('id') id: string, @CurrentUser() user: AuthUser, @Req() req: Request) {
+    return this.photos.refreshUploadUrl(id, user, req.ip);
+  }
+
   /** GET /photos/{id} — signed view URL. Team Leader / Admin only; view logged. */
   @Get('photos/:id')
   @Roles(Role.team_leader, Role.admin)

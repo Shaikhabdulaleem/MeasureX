@@ -10,6 +10,7 @@ import '../../core/api_client.dart';
 import '../../core/db/app_database.dart';
 import '../../core/image_util.dart';
 import '../auth/auth_controller.dart';
+import '../scale/scale_controller.dart';
 import '../sync/sync_providers.dart';
 
 const _uuid = Uuid();
@@ -94,7 +95,8 @@ class CaptureController extends StateNotifier<CaptureState> {
     return _api.lookupAwb(token, awb);
   }
 
-  /// Begin (or resume) a capture session for an AWB.
+  /// Begin (or resume) a capture session for an AWB. Starting a new AWB clears
+  /// any captured scale weight so a fresh stable reading is required (PRD §9).
   void startSession(String awb, int nextPackageNumber, {String? shipmentId}) {
     state = CaptureState(
       awb: awb,
@@ -102,6 +104,7 @@ class CaptureController extends StateNotifier<CaptureState> {
       nextPackageNumber: nextPackageNumber,
       savedPackages: const [],
     );
+    _ref.read(scaleControllerProvider.notifier).consumeStableWeight();
   }
 
   /// Save a package locally (PRD §10: the phone is the first place every record
@@ -127,6 +130,7 @@ class CaptureController extends StateNotifier<CaptureState> {
     final idempotencyKey = _uuid.v4();
     final provisionalNumber = await _db.nextProvisionalNumber(awb);
     final deviceId = await _installId();
+    final user = _ref.read(authControllerProvider).user;
 
     // Compress and persist the photo to app-private storage (PRD §6, §10).
     final compressed = compressForUpload(photoBytes);
@@ -150,8 +154,14 @@ class CaptureController extends StateNotifier<CaptureState> {
         actualWeightG: Value(actualWeightG),
         scaleId: Value(scaleId),
         deviceId: Value(deviceId),
+        measuredByUserId: Value(user?.id),
+        measuredByName: Value(user?.name),
       ),
     );
+
+    // A stable weight is consumed once per package: clear it so the next
+    // package requires a fresh stable reading (PRD §9).
+    _ref.read(scaleControllerProvider.notifier).consumeStableWeight();
 
     // Nudge the engine so it syncs promptly when online.
     _ref.read(syncEngineProvider).runNow();

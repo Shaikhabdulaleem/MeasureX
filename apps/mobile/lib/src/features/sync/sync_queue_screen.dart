@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../core/db/app_database.dart';
+import '../auth/auth_controller.dart';
+import 'provisional.dart';
 import 'sync_providers.dart';
 
 /// Sync Queue (PRD §5, §10): counts by state + a Retry for failed/conflict
@@ -65,8 +67,9 @@ class _QueueList extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final db = ref.watch(appDatabaseProvider);
-    return StreamBuilder<List<SyncQueueData>>(
-      stream: db.watchQueue(),
+    final currentUserId = ref.watch(authControllerProvider).user?.id;
+    return StreamBuilder<List<QueueRow>>(
+      stream: db.watchQueueDetailed(),
       builder: (context, snapshot) {
         final rows = snapshot.data ?? const [];
         if (rows.isEmpty) {
@@ -77,24 +80,37 @@ class _QueueList extends ConsumerWidget {
         }
         return Column(
           children: [
-            for (final r in rows)
-              ListTile(
-                dense: true,
-                leading: Icon(_iconFor(r.status)),
-                title: Text(r.packageId, overflow: TextOverflow.ellipsis),
-                subtitle: Text(
-                  r.lastError == null ? r.status : '${r.status} — ${r.lastError}',
-                ),
-                trailing: (r.status == SyncState.failed || r.status == SyncState.conflict)
-                    ? TextButton(
-                        onPressed: () => ref.read(syncEngineProvider).retryAll(),
-                        child: const Text('Retry'),
-                      )
-                    : null,
-              ),
+            for (final r in rows) _row(context, ref, r, currentUserId),
           ],
         );
       },
+    );
+  }
+
+  Widget _row(BuildContext context, WidgetRef ref, QueueRow r, String? currentUserId) {
+    // A record owned by another user stays on this device and only that user
+    // can sync it (PRD §3 shared phones).
+    final ownedByOther = r.ownerUserId != null && r.ownerUserId != currentUserId;
+    final label = formatPackageLabel(
+      serverNumber: r.serverNumber,
+      provisionalNumber: r.provisionalNumber,
+    );
+    final subtitle = ownedByOther
+        ? 'Waiting for ${r.ownerName ?? 'another user'}'
+        : (r.lastError == null ? r.status : '${r.status} — ${r.lastError}');
+    final canRetry = !ownedByOther &&
+        (r.status == SyncState.failed || r.status == SyncState.conflict);
+    return ListTile(
+      dense: true,
+      leading: Icon(ownedByOther ? Icons.lock_outline : _iconFor(r.status)),
+      title: Text('${r.awb} · $label', overflow: TextOverflow.ellipsis),
+      subtitle: Text(subtitle),
+      trailing: canRetry
+          ? TextButton(
+              onPressed: () => ref.read(syncEngineProvider).retry(r.packageId),
+              child: const Text('Retry'),
+            )
+          : null,
     );
   }
 

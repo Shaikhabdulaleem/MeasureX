@@ -218,6 +218,18 @@ class ApiClient {
     return PhotoUploadTarget.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
   }
 
+  /// Fresh signed upload URL for an EXISTING photo (retry path, PRD §10). Used
+  /// when a package's data is already on the server but the photo upload failed;
+  /// no new photo row is created.
+  Future<PhotoUploadTarget> refreshPhotoUpload(String token, String photoId) async {
+    final res = await _client.post(
+      _uri('/photos/$photoId/upload-url'),
+      headers: _authHeaders(token),
+    );
+    if (res.statusCode != 200) throw _error(res);
+    return PhotoUploadTarget.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+  }
+
   /// Upload the JPEG bytes directly to the signed URL (bypasses the API).
   Future<void> uploadPhotoBytes(PhotoUploadTarget target, List<int> bytes) async {
     final res = await _client.put(

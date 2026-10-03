@@ -318,10 +318,22 @@ export class PackagesService {
         const renumbered =
           numbering === 'confirmed_at' ? await renumberByConfirmedAt(tx, shipment.id) : [];
 
-        // 8. Possible duplicate: the shipment is now measured by two or more
-        //    devices (same AWB on two phones offline, PRD §10 rule 3). Keep
-        //    both; flag once for the Team Leader.
-        const duplicate = await this.isMultiDevice(tx, shipment.id);
+        // 8. Possible duplicate (sync path only, PRD §10 rule 3): another
+        //    device already has a package on this shipment that was RECEIVED by
+        //    the server after this item was confirmed — i.e. the two were
+        //    measured concurrently while this device was offline. Online adds
+        //    from two phones (append path, or received before this was
+        //    confirmed) never flag. Both packages are kept; flag once for the TL.
+        const duplicate =
+          numbering === 'confirmed_at' &&
+          dto.deviceId != null &&
+          (await this.isOfflineDuplicate(
+            tx,
+            shipment.id,
+            dto.id,
+            dto.deviceId,
+            new Date(dto.confirmedAt),
+          ));
         if (duplicate && !shipment.flags.includes('possible_duplicate')) {
           const alreadyOpen = await tx.flag.findFirst({
             where: { shipmentId: shipment.id, type: 'possible_duplicate', status: 'open' },
@@ -357,14 +369,32 @@ export class PackagesService {
 
   // --- internals -----------------------------------------------------------
 
-  /** True when the shipment's active packages span two or more distinct devices. */
-  private async isMultiDevice(tx: Prisma.TransactionClient, shipmentId: string): Promise<boolean> {
-    const devices = await tx.package.findMany({
-      where: { shipmentId, status: 'active', deletedAt: null, deviceId: { not: null } },
-      select: { deviceId: true },
-      distinct: ['deviceId'],
+  /**
+   * True when another device already has an active package on this shipment
+   * that the server RECEIVED after the incoming item was confirmed — the
+   * signature of two phones measuring the same AWB while offline (PRD §10
+   * rule 3). A package received before this item was confirmed is a normal
+   * sequential add and does not flag.
+   */
+  private async isOfflineDuplicate(
+    tx: Prisma.TransactionClient,
+    shipmentId: string,
+    packageId: string,
+    deviceId: string,
+    confirmedAt: Date,
+  ): Promise<boolean> {
+    const other = await tx.package.findFirst({
+      where: {
+        shipmentId,
+        status: 'active',
+        deletedAt: null,
+        id: { not: packageId },
+        deviceId: { not: deviceId },
+        syncReceivedAt: { gt: confirmedAt },
+      },
+      select: { id: true },
     });
-    return devices.length >= 2;
+    return other != null;
   }
 
   private async findOrCreateShipment(tx: Prisma.TransactionClient, awb: string, branchId: string) {

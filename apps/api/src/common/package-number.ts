@@ -53,13 +53,34 @@ export async function renumberByConfirmedAt(
     orderBy: [{ confirmedAt: 'asc' }, { id: 'asc' }],
   });
 
+  // Numbers held by void / superseded packages are never reused (PRD §8): a
+  // voided PKG 02 keeps the number 2 out of the active sequence.
+  const reserved = await tx.package.findMany({
+    where: {
+      shipmentId,
+      deletedAt: null,
+      status: { in: ['void', 'superseded'] },
+      packageNumber: { not: null },
+    },
+    select: { packageNumber: true },
+  });
+  const reservedNumbers = new Set(reserved.map((p) => p.packageNumber as number));
+
+  let candidate = 0;
+  const nextFree = (): number => {
+    do {
+      candidate += 1;
+    } while (reservedNumbers.has(candidate));
+    return candidate;
+  };
+
   const changes: RenumberChange[] = [];
-  active.forEach((pkg, index) => {
-    const target = index + 1;
+  for (const pkg of active) {
+    const target = nextFree();
     if (pkg.packageNumber !== target) {
       changes.push({ id: pkg.id, from: pkg.packageNumber, to: target });
     }
-  });
+  }
 
   if (changes.length === 0) return changes;
 
