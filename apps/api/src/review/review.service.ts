@@ -4,11 +4,14 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Flag, RemeasureRequest } from '@prisma/client';
+import { Flag, Prisma, RemeasureRequest } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { AuditService } from '../audit/audit.service';
 import { AuthUser } from '../auth/decorators/current-user.decorator';
-import { FlagCreateDto, RemeasureCreateDto } from './dto/review.dto';
+import { shipmentScopeWhere } from '../common/scope';
+import { FlagCreateDto, FlagQueryDto, FlagResolveDto, RemeasureCreateDto } from './dto/review.dto';
+
+const DEFAULT_LIMIT = 50;
 
 @Injectable()
 export class ReviewService {
@@ -131,6 +134,148 @@ export class ReviewService {
     });
 
     return serializeRemeasure(request);
+  }
+
+  /**
+   * GET /flags — the Team-Leader review queue (PRD §11), branch-scoped. Returns
+   * flags whose shipment (directly, or via the flagged package) is in the
+   * caller's scope. Cursor-paginated, newest first.
+   */
+  async listFlags(user: AuthUser, query: FlagQueryDto) {
+    const limit = Math.min(Number(query.limit) || DEFAULT_LIMIT, 100);
+    const scope = shipmentScopeWhere(user);
+
+    const and: Prisma.FlagWhereInput[] = [
+      { deletedAt: null },
+      {
+        OR: [
+          { shipment: { is: scope } },
+          { AND: [{ shipmentId: null }, { package: { is: { shipment: { is: scope } } } }] },
+        ],
+      },
+    ];
+    if (query.status) and.push({ status: query.status });
+    if (query.type) and.push({ type: query.type });
+    if (query.awb) {
+      and.push({ shipment: { is: { awb: { contains: query.awb.toUpperCase() } } } });
+    }
+
+    const rows = await this.prisma.flag.findMany({
+      where: { AND: and },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: limit + 1,
+      ...(query.cursor ? { cursor: { id: query.cursor }, skip: 1 } : {}),
+      include: { shipment: { select: { awb: true, branchId: true } } },
+    });
+
+    const hasMore = rows.length > limit;
+    const page = hasMore ? rows.slice(0, limit) : rows;
+    return {
+      items: page.map((f) => ({ ...serializeFlag(f), awb: f.shipment?.awb ?? null })),
+      nextCursor: hasMore ? page[page.length - 1]!.id : null,
+    };
+  }
+
+  /**
+   * GET /remeasurements — open (and recent) remeasurement requests in the
+   * caller's scope (PRD §11). Cursor-paginated, newest first.
+   */
+  async listRemeasurements(user: AuthUser, status: string | undefined, cursor?: string) {
+    const scope = shipmentScopeWhere(user);
+    const and: Prisma.RemeasureRequestWhereInput[] = [
+      { deletedAt: null },
+      { shipment: { is: scope } },
+    ];
+    if (status === 'open' || status === 'done' || status === 'cancelled') {
+      and.push({ status });
+    }
+
+    const rows = await this.prisma.remeasureRequest.findMany({
+      where: { AND: and },
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+      take: 51,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+      include: { shipment: { select: { awb: true } } },
+    });
+
+    const hasMore = rows.length > 50;
+    const page = hasMore ? rows.slice(0, 50) : rows;
+    return {
+      items: page.map((r) => ({ ...serializeRemeasure(r), awb: r.shipment?.awb ?? null })),
+      nextCursor: hasMore ? page[page.length - 1]!.id : null,
+    };
+  }
+
+  /**
+   * POST /flags/{id}/resolve — approve or dismiss a flag (PRD §11). Both close
+   * the flag (status resolved / dismissed) with an optional note; when no open
+   * flag of that type remains on the shipment, the type is removed from the
+   * shipment's `flags[]` summary. Branch-scoped and audited.
+   */
+  async resolveFlag(id: string, dto: FlagResolveDto, user: AuthUser, ip?: string) {
+    const scope = shipmentScopeWhere(user);
+    const flag = await this.prisma.flag.findFirst({
+      where: {
+        id,
+        deletedAt: null,
+        OR: [
+          { shipment: { is: scope } },
+          { AND: [{ shipmentId: null }, { package: { is: { shipment: { is: scope } } } }] },
+        ],
+      },
+    });
+    if (!flag) {
+      throw new NotFoundException({ code: 'NOT_FOUND', message: 'Flag not found' });
+    }
+    if (flag.status !== 'open') {
+      throw new ConflictException({
+        code: 'FLAG_NOT_OPEN',
+        message: `Flag is already ${flag.status}`,
+      });
+    }
+
+    const newStatus = dto.action === 'approve' ? 'resolved' : 'dismissed';
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const u = await tx.flag.update({
+        where: { id },
+        data: { status: newStatus, resolvedBy: user.sub, note: dto.note ?? flag.note },
+      });
+
+      // Prune the shipment summary when no open flag of this type remains.
+      if (flag.shipmentId) {
+        const stillOpen = await tx.flag.count({
+          where: { shipmentId: flag.shipmentId, type: flag.type, status: 'open', deletedAt: null },
+        });
+        if (stillOpen === 0) {
+          const shipment = await tx.shipment.findUnique({
+            where: { id: flag.shipmentId },
+            select: { flags: true },
+          });
+          if (shipment?.flags.includes(flag.type)) {
+            await tx.shipment.update({
+              where: { id: flag.shipmentId },
+              data: { flags: { set: shipment.flags.filter((t) => t !== flag.type) } },
+            });
+          }
+        }
+      }
+      return u;
+    });
+
+    await this.audit.record({
+      userId: user.sub,
+      role: user.role as never,
+      entity: 'flag',
+      entityId: id,
+      action: 'flag_resolved',
+      before: { status: 'open' },
+      after: { status: newStatus, action: dto.action },
+      reason: dto.note ?? null,
+      ip,
+    });
+
+    return serializeFlag(updated);
   }
 
   /** Cancel an open remeasurement request → shipment back to completed (§8). */

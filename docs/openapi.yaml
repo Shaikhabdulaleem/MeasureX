@@ -278,10 +278,14 @@ paths:
     post:
       tags: [Packages]
       summary: Correct a package (new version, old kept; reason required)
-      description: Team Leader/Admin. Recomputes totals, writes an audit entry.
+      description: >
+        Team Leader/Admin, within the package's branch scope. Appends a new
+        immutable measurement_version and repoints the current version (the old
+        version is never edited), recomputes shipment totals, and writes an audit
+        entry with before/after. A dimensions-only correction carries over the
+        previous weight; a manual weight requires weightReason.
       parameters:
         - $ref: '#/components/parameters/IdPath'
-        - $ref: '#/components/parameters/IdempotencyKey'
       requestBody:
         required: true
         content:
@@ -293,12 +297,23 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Package' }
+        '400': { $ref: '#/components/responses/BadRequest' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Package is not active (void/superseded cannot be corrected)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /packages/{id}/void:
     post:
       tags: [Packages]
       summary: Void a package (wrong AWB; reason required). Excluded from totals.
+      description: >
+        Team Leader/Admin, within the package's branch scope. Sets status=void,
+        keeps the package number out of the active sequence, recomputes totals,
+        and audits before/after.
       parameters:
         - $ref: '#/components/parameters/IdPath'
       requestBody:
@@ -313,6 +328,12 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Package' }
         '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Package is not active (already void/superseded)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   # ---------------------------------------------------------------- Photos
   /packages/{id}/photos:
@@ -512,7 +533,12 @@ paths:
   /flags/{id}/resolve:
     post:
       tags: [Review]
-      summary: Resolve or dismiss a flag (note optional)
+      summary: Approve or dismiss a flag (note optional). Team Leader/Admin.
+      description: >
+        Branch-scoped. `approve` closes the flag as resolved, `dismiss` as
+        dismissed; both record the note and an audit entry. When no open flag of
+        that type remains on the shipment, the type is removed from the
+        shipment's flags summary.
       parameters:
         - $ref: '#/components/parameters/IdPath'
       requestBody:
@@ -521,11 +547,11 @@ paths:
           application/json:
             schema:
               type: object
-              required: [status]
+              required: [action]
               properties:
-                status:
+                action:
                   type: string
-                  enum: [resolved, dismissed]
+                  enum: [approve, dismiss]
                 note: { type: string }
       responses:
         '200':
@@ -533,8 +559,34 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Flag' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+        '404': { $ref: '#/components/responses/NotFound' }
+        '409':
+          description: Flag is not open (already resolved/dismissed)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Error' }
 
   /remeasurements:
+    get:
+      tags: [Review]
+      summary: List remeasurement requests in scope. Team Leader/Admin.
+      parameters:
+        - { in: query, name: status, schema: { type: string, enum: [open, done, cancelled] } }
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Page of remeasurement requests
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/Page'
+                  - type: object
+                    properties:
+                      items:
+                        type: array
+                        items: { $ref: '#/components/schemas/RemeasureRequest' }
     post:
       tags: [Review]
       summary: Request a remeasurement (reason required). Team Leader/Admin.
@@ -1298,6 +1350,15 @@ components:
         provisionalNumber: { type: integer, nullable: true }
         stationId: { type: string, format: uuid, nullable: true }
         deviceId: { type: string, format: uuid, nullable: true }
+        remeasureOfPackageId:
+          type: string
+          format: uuid
+          nullable: true
+          description: >
+            Set when this capture completes a remeasurement (PRD §8): the id of
+            the active package it supersedes. The server supersedes that package,
+            gives this one the SAME package_number, and returns the shipment to
+            completed once every requested package is remeasured.
         lengthMm: { type: integer }
         widthMm: { type: integer }
         heightMm: { type: integer }
@@ -1329,14 +1390,22 @@ components:
                 rejects an item whose owner is not the caller (OWNER_MISMATCH).
     CorrectionCreate:
       type: object
-      required: [reason]
+      required: [lengthMm, widthMm, heightMm, reason]
+      description: >
+        New dimensions (base units) plus a mandatory reason. Omitting the weight
+        fields carries over the previous version's weight; a manual weight
+        requires weightReason. The server recomputes all billing.
       properties:
         lengthMm: { type: integer }
         widthMm: { type: integer }
         heightMm: { type: integer }
         actualWeightG: { type: integer, nullable: true }
         weightSource: { $ref: '#/components/schemas/WeightSource' }
+        scaleId: { type: string, format: uuid, nullable: true }
+        weightReason: { type: string, nullable: true, description: Required when weightSource = manual }
         method: { $ref: '#/components/schemas/MeasurementMethod' }
+        confidence: { $ref: '#/components/schemas/Confidence' }
+        confidenceDetail: { type: object, additionalProperties: true, nullable: true }
         reason: { type: string }
     MeasurementVersion:
       type: object

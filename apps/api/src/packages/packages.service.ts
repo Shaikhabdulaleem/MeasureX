@@ -84,6 +84,12 @@ export class PackagesService {
     this.assertDimensionsInRange(dto, cfg.minDimensionCm, cfg.maxDimensionCm);
     await this.assertWeightRules(dto, cfg.weightRequired, user);
 
+    // Remeasurement completion (PRD §8): this capture supersedes an existing
+    // package and reuses its number, rather than appending a new one.
+    if (dto.remeasureOfPackageId) {
+      return this.remeasure(awb, dto, idempotencyKey, user, cfg, ip);
+    }
+
     const outcome = await this.createWithRetry(awb, dto, idempotencyKey, user, cfg, numbering);
 
     if (!outcome.replayed) {
@@ -148,6 +154,213 @@ export class PackagesService {
       package: serializePackage(outcome.package),
       replayed: outcome.replayed,
       duplicate: outcome.duplicate,
+    };
+  }
+
+  /**
+   * Complete a remeasurement (PRD §8). The new capture supersedes an existing
+   * active package and REUSES its number; when every package named by the open
+   * remeasure request is superseded the shipment returns to `completed`
+   * (a System transition). Idempotent on the client UUID / Idempotency-Key.
+   */
+  private async remeasure(
+    awb: string,
+    dto: PackageCreateDto,
+    idempotencyKey: string,
+    user: AuthUser,
+    cfg: Awaited<ReturnType<ConfigService['getEffectiveConfig']>>,
+    ip?: string,
+  ): Promise<CreateOutcome> {
+    const oldPackageId = dto.remeasureOfPackageId!;
+
+    const result = await this.prisma.$transaction(
+      async (tx) => {
+        await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${awb})::bigint)`;
+
+        // Idempotent replay: the new package already landed.
+        const existing = await tx.package.findFirst({
+          where: { deletedAt: null, OR: [{ id: dto.id }, { idempotencyKey }] },
+          include: PACKAGE_INCLUDE,
+        });
+        if (existing) {
+          return { package: existing, replayed: true, completedRequest: null, oldBefore: null };
+        }
+
+        const shipment = await tx.shipment.findFirst({ where: { awb, deletedAt: null } });
+        if (!shipment) {
+          throw new ConflictException({
+            code: 'SHIPMENT_NOT_FOUND',
+            message: 'Shipment not found for remeasurement',
+            details: { awb },
+          });
+        }
+        if (!canAccessBranch(user, shipment.branchId)) {
+          throw new ConflictException({
+            code: 'SHIPMENT_OTHER_BRANCH',
+            message: 'This shipment belongs to another branch',
+            details: { awb, branchId: shipment.branchId },
+          });
+        }
+        if (shipment.status !== 'remeasure_required') {
+          throw new ConflictException({
+            code: 'NO_REMEASURE_PENDING',
+            message: `Shipment is ${shipment.status}, not awaiting remeasurement`,
+            details: { awb, status: shipment.status },
+          });
+        }
+
+        const oldPkg = await tx.package.findFirst({
+          where: { id: oldPackageId, shipmentId: shipment.id, deletedAt: null },
+        });
+        if (!oldPkg || oldPkg.status !== 'active') {
+          throw new ConflictException({
+            code: 'REMEASURE_TARGET_INVALID',
+            message: 'The package being remeasured is not an active package on this shipment',
+            details: { packageId: oldPackageId },
+          });
+        }
+
+        // There must be an open request on this shipment that names the package.
+        const request = await tx.remeasureRequest.findFirst({
+          where: { shipmentId: shipment.id, status: 'open', deletedAt: null },
+        });
+        if (!request || !request.packageIds.includes(oldPackageId)) {
+          throw new ConflictException({
+            code: 'REMEASURE_NOT_REQUESTED',
+            message: 'No open remeasurement request names this package',
+            details: { packageId: oldPackageId },
+          });
+        }
+
+        // Supersede the old package FIRST so the partial unique index frees its
+        // number, then create the new active package reusing that number.
+        await tx.package.update({ where: { id: oldPkg.id }, data: { status: 'superseded' } });
+
+        await tx.package.create({
+          data: {
+            id: dto.id,
+            shipmentId: shipment.id,
+            packageNumber: oldPkg.packageNumber,
+            provisionalNumber: dto.provisionalNumber ?? null,
+            status: 'active',
+            stationId: dto.stationId ?? null,
+            deviceId: dto.deviceId ?? null,
+            measuredBy: user.sub,
+            idempotencyKey,
+            confirmedAt: new Date(dto.confirmedAt),
+            syncReceivedAt: new Date(),
+          },
+        });
+
+        const billing = computeVersionBilling(
+          {
+            lengthMm: dto.lengthMm,
+            widthMm: dto.widthMm,
+            heightMm: dto.heightMm,
+            actualWeightG: dto.actualWeightG ?? null,
+          },
+          cfg,
+        );
+        const version = await tx.measurementVersion.create({
+          data: {
+            packageId: dto.id,
+            versionNo: 1,
+            lengthMm: dto.lengthMm,
+            widthMm: dto.widthMm,
+            heightMm: dto.heightMm,
+            actualWeightG: dto.actualWeightG ?? null,
+            weightSource: dto.weightSource ?? 'none',
+            scaleId: dto.scaleId ?? null,
+            method: dto.method ?? 'manual',
+            confidence: dto.confidence ?? null,
+            confidenceDetail: (dto.confidenceDetail ?? undefined) as Prisma.InputJsonValue,
+            divisorUsed: billing.divisorUsed,
+            billingLCm: billing.billingLCm,
+            billingWCm: billing.billingWCm,
+            billingHCm: billing.billingHCm,
+            cbm: billing.cbm,
+            volumetricG: billing.volumetricG,
+            chargeableG: billing.chargeableG,
+            createdBy: user.sub,
+            reason: `remeasurement of PKG ${oldPkg.packageNumber ?? '?'}`,
+          },
+        });
+        await tx.package.update({ where: { id: dto.id }, data: { currentVersionId: version.id } });
+
+        // Completion: when no package named by the request is still active, the
+        // request is done and the shipment returns to completed (System, §8).
+        const stillActive = await tx.package.count({
+          where: { id: { in: request.packageIds }, status: 'active', deletedAt: null },
+        });
+        let completedRequest: string | null = null;
+        if (stillActive === 0) {
+          await tx.remeasureRequest.update({
+            where: { id: request.id },
+            data: { status: 'done', doneBy: user.sub, closedAt: new Date() },
+          });
+          await tx.shipment.update({
+            where: { id: shipment.id },
+            data: { status: 'completed', completedAt: new Date() },
+          });
+          completedRequest = request.id;
+        }
+
+        await recomputeShipmentTotals(tx, shipment.id);
+
+        const created = await tx.package.findUniqueOrThrow({
+          where: { id: dto.id },
+          include: PACKAGE_INCLUDE,
+        });
+        return {
+          package: created,
+          replayed: false,
+          completedRequest,
+          oldBefore: { id: oldPkg.id, status: 'active', packageNumber: oldPkg.packageNumber },
+        };
+      },
+      { timeout: 15_000 },
+    );
+
+    if (!result.replayed) {
+      await this.audit.record({
+        userId: user.sub,
+        role: user.role as never,
+        entity: 'package',
+        entityId: oldPackageId,
+        action: 'package_remeasured',
+        before: result.oldBefore,
+        after: { status: 'superseded', replacedBy: result.package.id },
+        ip,
+        deviceId: dto.deviceId ?? null,
+      });
+      await this.audit.record({
+        userId: user.sub,
+        role: user.role as never,
+        entity: 'package',
+        entityId: result.package.id,
+        action: 'package_created',
+        after: serializePackage(result.package),
+        reason: 'remeasurement',
+        ip,
+        deviceId: dto.deviceId ?? null,
+      });
+      if (result.completedRequest) {
+        await this.audit.record({
+          userId: user.sub,
+          role: user.role as never,
+          entity: 'shipment',
+          entityId: result.package.shipmentId,
+          action: 'remeasure_completed',
+          after: { status: 'completed', requestId: result.completedRequest },
+          ip,
+        });
+      }
+    }
+
+    return {
+      package: serializePackage(result.package),
+      replayed: result.replayed,
+      duplicate: false,
     };
   }
 

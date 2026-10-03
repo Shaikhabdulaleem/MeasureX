@@ -34,6 +34,16 @@ export class PackageCreateDto {
   @IsUUID()
   deviceId?: string;
 
+  /**
+   * Set when this capture completes a remeasurement (PRD §8): the id of the
+   * active package it supersedes. The server marks that package `superseded` and
+   * gives this new package the SAME package_number; when every package in the
+   * open remeasure request is superseded the shipment returns to `completed`.
+   */
+  @IsOptional()
+  @IsUUID()
+  remeasureOfPackageId?: string;
+
   @IsInt()
   @Min(1)
   lengthMm!: number;

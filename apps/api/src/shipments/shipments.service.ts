@@ -94,6 +94,47 @@ export class ShipmentsService {
     return serializeShipment(updated);
   }
 
+  /**
+   * POST /shipments/{awb}/reopen — completed → in_progress (§8). Team Leader /
+   * Admin only, reason required (enforced by the DTO). Clears completedAt so the
+   * shipment can take more packages or corrections; audited before/after.
+   */
+  async reopen(rawAwb: string, reason: string, user: AuthUser, ip?: string) {
+    const awb = normaliseAwb(rawAwb);
+    const shipment = await this.prisma.shipment.findFirst({
+      where: { AND: [{ awb, deletedAt: null }, shipmentScopeWhere(user)] },
+    });
+    if (!shipment) {
+      throw new NotFoundException({ code: 'NOT_FOUND', message: 'Shipment not found' });
+    }
+    if (shipment.status !== 'completed') {
+      throw new ConflictException({
+        code: 'INVALID_TRANSITION',
+        message: `Cannot reopen a ${shipment.status} shipment`,
+        details: { from: shipment.status, to: 'in_progress' },
+      });
+    }
+
+    const updated = await this.prisma.shipment.update({
+      where: { id: shipment.id },
+      data: { status: 'in_progress', completedAt: null },
+    });
+
+    await this.audit.record({
+      userId: user.sub,
+      role: user.role as never,
+      entity: 'shipment',
+      entityId: shipment.id,
+      action: 'shipment_reopened',
+      before: { status: shipment.status, completedAt: shipment.completedAt },
+      after: { status: updated.status, completedAt: null },
+      reason,
+      ip,
+    });
+
+    return serializeShipment(updated);
+  }
+
   // --- internals -----------------------------------------------------------
 
   private buildWhere(user: AuthUser, query: ShipmentQueryDto): Prisma.ShipmentWhereInput {
