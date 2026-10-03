@@ -84,4 +84,76 @@ void main() {
     );
     expect(after.stable, isFalse);
   });
+
+  group('device stability flag (PRD §9)', () {
+    test('a single "ST" reading is stable immediately (12340 g)', () {
+      final d = StabilityDetector(thresholds);
+      final r = d.add(
+        ScaleReading(grams: 12340, timestamp: t0, deviceStable: true),
+        now: t0,
+      );
+      expect(r.stable, isTrue);
+      expect(r.grams, 12340);
+    });
+
+    test('a "US" reading is never stable even if steady', () {
+      final d = StabilityDetector(thresholds);
+      late StabilityResult r;
+      for (var i = 0; i < 6; i++) {
+        final at = t0.add(Duration(milliseconds: 400 * i));
+        r = d.add(
+          ScaleReading(grams: 12340, timestamp: at, deviceStable: false),
+          now: at,
+        );
+      }
+      expect(r.stable, isFalse);
+      expect(r.phase, ScaleState.unstable);
+    });
+
+    test('an "ST" reading below 50 g is still not stable', () {
+      final d = StabilityDetector(thresholds);
+      final r = d.add(
+        ScaleReading(grams: 10, timestamp: t0, deviceStable: true),
+        now: t0,
+      );
+      expect(r.stable, isFalse);
+    });
+  });
+
+  group('one-shot scales (HID / settle-then-send)', () {
+    const oneShot = ScaleThresholds(
+      window: 5,
+      toleranceG: 20,
+      windowMs: 1500,
+      minWeightG: 50,
+      staleAfterMs: 5000,
+      streaming: false,
+    );
+
+    test('a single reading is stable, and stays valid after 30 s', () {
+      final d = StabilityDetector(oneShot);
+      final r = d.add(ScaleReading(grams: 12340, timestamp: t0), now: t0);
+      expect(r.stable, isTrue);
+      expect(r.grams, 12340);
+
+      // No new reading for 30 s — the settled value persists (not stale).
+      final later = d.evaluate(t0.add(const Duration(seconds: 30)));
+      expect(later.stable, isTrue);
+      expect(later.grams, 12340);
+      expect(later.stale, isFalse);
+    });
+
+    test('a reading below 50 g clears the value', () {
+      final d = StabilityDetector(oneShot);
+      final stable = d.add(ScaleReading(grams: 12340, timestamp: t0), now: t0);
+      expect(stable.stable, isTrue);
+
+      final cleared = d.add(
+        ScaleReading(grams: 0, timestamp: t0.add(const Duration(seconds: 5))),
+        now: t0.add(const Duration(seconds: 5)),
+      );
+      expect(cleared.stable, isFalse);
+      expect(cleared.grams, isNull);
+    });
+  });
 }

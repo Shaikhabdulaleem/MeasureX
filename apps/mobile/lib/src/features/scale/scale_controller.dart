@@ -110,6 +110,7 @@ class ScaleController extends StateNotifier<ScaleRuntime> {
       windowMs: scale.stabilityWindowMs,
       minWeightG: scale.minWeightG,
       staleAfterMs: scale.staleAfterMs,
+      streaming: scale.streaming,
     ));
     state = ScaleRuntime(scale: scale, state: ScaleState.disconnected);
     if (remember) {
@@ -180,6 +181,8 @@ class ScaleController extends StateNotifier<ScaleRuntime> {
       grams: result.grams,
       stable: result.stable,
       stale: result.stale,
+      // A below-min reading clears the value (nothing on the scale, PRD §9).
+      clearGrams: result.grams == null,
     );
   }
 

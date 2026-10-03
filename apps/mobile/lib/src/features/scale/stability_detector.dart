@@ -67,45 +67,80 @@ class StabilityDetector {
   StabilityResult _evaluate(DateTime now) {
     if (_window.isEmpty) return StabilityResult.empty;
 
-    // Staleness is a property of the LATEST reading, so decide it before any
-    // pruning (otherwise an idle scale would empty the buffer and hide it).
     final latest = _window.last;
-    final latestAgeMs = now.difference(latest.timestamp).inMilliseconds;
-    final stale = latestAgeMs > thresholds.staleAfterMs;
 
-    // Drop readings (except the latest) that have aged past the stale horizon,
-    // so a long gap can never be treated as a consecutive window. Then keep the
-    // buffer bounded to the most recent `window` readings.
+    // Nothing on the scale → never stable, and the value is cleared (PRD §9).
+    // For a one-shot scale this is also how a settled value is released.
+    if (latest.grams <= thresholds.minWeightG) {
+      _window.clear();
+      return const StabilityResult(
+        phase: ScaleState.reading,
+        grams: null,
+        stable: false,
+        stale: false,
+        spreadG: 0,
+      );
+    }
+
+    // Staleness applies to STREAMING scales only; a one-shot value persists
+    // until the next reading, a drop below minWeightG, or disconnect.
+    final latestAgeMs = now.difference(latest.timestamp).inMilliseconds;
+    final stale = thresholds.streaming && latestAgeMs > thresholds.staleAfterMs;
+
+    // The scale's own stability flag wins when present (PRD §9): ST → stable,
+    // US → never stable; only fall back to the window rule when it is absent.
+    final deviceFlag = latest.deviceStable;
+
+    // Drop readings (except the latest) that have aged past the stale horizon so
+    // a long gap can never form a false "consecutive" window; bound to `window`.
     _window.removeWhere(
-      (r) => !identical(r, latest) && now.difference(r.timestamp).inMilliseconds > thresholds.staleAfterMs,
+      (r) =>
+          !identical(r, latest) &&
+          now.difference(r.timestamp).inMilliseconds > thresholds.staleAfterMs,
     );
     if (_window.length > thresholds.window) {
       _window.removeRange(0, _window.length - thresholds.window);
     }
 
-    // Consider only the most recent `window` readings for the stability test.
-    final recent = _window.length <= thresholds.window
-        ? List<ScaleReading>.from(_window)
-        : _window.sublist(_window.length - thresholds.window);
-
+    final recent = _window;
     final grams = recent.map((r) => r.grams).toList();
     final minG = grams.reduce((a, b) => a < b ? a : b);
     final maxG = grams.reduce((a, b) => a > b ? a : b);
     final spreadG = maxG - minG;
     final median = _median(grams);
-    final spanMs = recent.last.timestamp.difference(recent.first.timestamp).inMilliseconds;
+    final spanMs =
+        recent.last.timestamp.difference(recent.first.timestamp).inMilliseconds;
 
     final hasEnough = recent.length >= thresholds.window;
     final withinTolerance = spreadG <= thresholds.toleranceG;
     final longEnough = spanMs >= thresholds.windowMs;
-    final aboveMin = median > thresholds.minWeightG;
 
-    final stable = !stale && hasEnough && withinTolerance && longEnough && aboveMin;
+    // Decide stability. Device flag first; then one-shot (a settled line is
+    // stable on its own); else the streaming window rule.
+    final bool stableCandidate;
+    final bool windowRuleUsed;
+    if (deviceFlag == true) {
+      stableCandidate = true;
+      windowRuleUsed = false;
+    } else if (deviceFlag == false) {
+      stableCandidate = false;
+      windowRuleUsed = false;
+    } else if (!thresholds.streaming) {
+      stableCandidate = true; // one-shot: this reading is the settled value
+      windowRuleUsed = false;
+    } else {
+      stableCandidate = hasEnough && withinTolerance && longEnough;
+      windowRuleUsed = true;
+    }
+
+    final stable = stableCandidate && !stale;
+    // Average out jitter only when the streaming window rule produced it.
+    final chosenGrams = stable && windowRuleUsed ? median : latest.grams;
 
     final ScaleState phase;
     if (stable) {
       phase = ScaleState.stable;
-    } else if (recent.length >= 2 && !withinTolerance) {
+    } else if (deviceFlag == false || (windowRuleUsed && hasEnough && !withinTolerance)) {
       phase = ScaleState.unstable;
     } else {
       phase = ScaleState.reading;
@@ -113,7 +148,7 @@ class StabilityDetector {
 
     return StabilityResult(
       phase: phase,
-      grams: stable ? median : latest.grams,
+      grams: stable ? chosenGrams : latest.grams,
       stable: stable,
       stale: stale,
       spreadG: spreadG,

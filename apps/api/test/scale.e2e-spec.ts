@@ -97,7 +97,25 @@ describe('Scales CRUD and authorization (PRD §9, §13)', () => {
     expect(res.body.stabilityWindowMs).toBe(1500);
     expect(res.body.minWeightG).toBe(50);
     expect(res.body.staleAfterMs).toBe(5000);
+    // BLE/Classic default to streaming; HID defaults to one-shot (PRD §9).
+    expect(res.body.streaming).toBe(true);
     approvedScaleId = res.body.id;
+  });
+
+  it('defaults a HID scale to one-shot and honours an explicit override', async () => {
+    const hid = await request(server)
+      .post('/api/v1/scales')
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .send({ model: 'HID One-shot', connection: 'hid', adapterKey: 'hid' })
+      .expect(201);
+    expect(hid.body.streaming).toBe(false);
+
+    const overridden = await request(server)
+      .post('/api/v1/scales')
+      .set('Authorization', `Bearer ${admin.accessToken}`)
+      .send({ model: 'HID Streaming', connection: 'hid', adapterKey: 'hid', streaming: true })
+      .expect(201);
+    expect(overridden.body.streaming).toBe(true);
   });
 
   it('hides unapproved scales from the default list but shows them to admin with all=true', async () => {

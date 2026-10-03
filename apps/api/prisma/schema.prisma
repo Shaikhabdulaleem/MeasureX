@@ -260,7 +260,14 @@ model Scale {
   stabilityToleranceG Int @default(20) @map("stability_tolerance_g") // max spread within the window
   stabilityWindowMs   Int @default(1500) @map("stability_window_ms") // min duration of the window
   minWeightG          Int @default(50) @map("min_weight_g")          // ignore noise below this
-  staleAfterMs        Int @default(5000) @map("stale_after_ms")      // a reading older than this is stale
+  staleAfterMs        Int @default(5000) @map("stale_after_ms")      // a streaming reading older than this is stale
+
+  // Streaming scales emit readings continuously (the 5-reading / 1.5 s rule and
+  // the stale timeout apply). One-shot scales (HID keyboard mode and any scale
+  // that sends a line only once settled) deliver a final value per reading that
+  // stays valid until the next reading, a drop below minWeightG, or disconnect.
+  // Defaulted by connection on create (HID → one-shot); Admin may override.
+  streaming Boolean @default(true) @map("streaming")
 
   createdAt DateTime  @default(now()) @map("created_at")
   updatedAt DateTime  @updatedAt @map("updated_at")

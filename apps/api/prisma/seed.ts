@@ -37,6 +37,14 @@ const CONFIG: Array<{ key: string; value: unknown }> = [
 ];
 
 async function main(): Promise<void> {
+  const nodeEnv = process.env.NODE_ENV ?? 'development';
+  // Never seed a production database: it carries test users with a shared
+  // password and (below) a dev-only simulated scale.
+  if (nodeEnv === 'production') {
+    throw new Error('Refusing to run the seed with NODE_ENV=production');
+  }
+  const isDevOrTest = nodeEnv === 'development' || nodeEnv === 'test';
+
   const branch = await prisma.branch.upsert({
     where: { code: 'RUH' },
     update: {},
@@ -72,21 +80,24 @@ async function main(): Promise<void> {
     });
   }
 
-  // DEV ONLY: an approved "simulated" scale so the M2 scale flow can be
+  // DEV/TEST ONLY: an approved "simulated" scale so the M2 scale flow can be
   // exercised end-to-end without hardware (the simulated adapter is dev-only).
   // Real scale models are added by an Admin once chosen (PRD §9, Q6).
-  const existingSim = await prisma.scale.findFirst({
-    where: { adapterKey: 'simulated', deletedAt: null },
-  });
-  if (!existingSim) {
-    await prisma.scale.create({
-      data: {
-        model: 'Simulated Scale (dev)',
-        connection: 'hid',
-        adapterKey: 'simulated',
-        approved: true,
-      },
+  if (isDevOrTest) {
+    const existingSim = await prisma.scale.findFirst({
+      where: { adapterKey: 'simulated', deletedAt: null },
     });
+    if (!existingSim) {
+      await prisma.scale.create({
+        data: {
+          model: 'Simulated Scale (dev)',
+          connection: 'hid',
+          adapterKey: 'simulated',
+          approved: true,
+          streaming: true, // the simulated adapter emits a settling stream
+        },
+      });
+    }
   }
 
   // eslint-disable-next-line no-console

@@ -394,6 +394,7 @@ class ScaleModel {
     required this.connection,
     required this.adapterKey,
     required this.approved,
+    required this.streaming,
     required this.stabilityWindow,
     required this.stabilityToleranceG,
     required this.stabilityWindowMs,
@@ -406,6 +407,7 @@ class ScaleModel {
   final String connection;
   final String adapterKey;
   final bool approved;
+  final bool streaming;
   final int stabilityWindow;
   final int stabilityToleranceG;
   final int stabilityWindowMs;
@@ -418,6 +420,7 @@ class ScaleModel {
         connection: json['connection'] as String,
         adapterKey: json['adapterKey'] as String,
         approved: json['approved'] as bool? ?? false,
+        streaming: json['streaming'] as bool? ?? true,
         stabilityWindow: (json['stabilityWindow'] as num?)?.toInt() ?? 5,
         stabilityToleranceG: (json['stabilityToleranceG'] as num?)?.toInt() ?? 20,
         stabilityWindowMs: (json['stabilityWindowMs'] as num?)?.toInt() ?? 1500,

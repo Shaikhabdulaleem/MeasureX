@@ -23,6 +23,11 @@ export class ScaleCreateDto {
   @IsBoolean()
   approved?: boolean;
 
+  /** Streaming (continuous) vs one-shot. Defaults by connection (HID → one-shot). */
+  @IsOptional()
+  @IsBoolean()
+  streaming?: boolean;
+
   @IsOptional()
   @IsInt()
   @Min(1)
@@ -68,6 +73,11 @@ export class ScaleUpdateDto {
   @IsOptional()
   @IsBoolean()
   approved?: boolean;
+
+  /** Streaming (continuous) vs one-shot. Defaults by connection (HID → one-shot). */
+  @IsOptional()
+  @IsBoolean()
+  streaming?: boolean;
 
   @IsOptional()
   @IsInt()

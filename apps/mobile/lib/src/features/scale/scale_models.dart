@@ -39,6 +39,7 @@ class ScaleThresholds {
     this.windowMs = 1500,
     this.minWeightG = 50,
     this.staleAfterMs = 5000,
+    this.streaming = true,
   });
 
   /// Consecutive readings that must agree.
@@ -53,8 +54,13 @@ class ScaleThresholds {
   /// Readings at or below this weight are treated as "nothing on the scale".
   final int minWeightG;
 
-  /// A reading older than this (ms) is stale and must never be saved.
+  /// A streaming reading older than this (ms) is stale and must never be saved.
+  /// One-shot scales ignore this: their value persists until the next reading,
+  /// a drop below [minWeightG], or disconnect.
   final int staleAfterMs;
+
+  /// Streaming (continuous) vs one-shot (HID / settle-then-send) capture.
+  final bool streaming;
 
   factory ScaleThresholds.fromJson(Map<String, dynamic> json) => ScaleThresholds(
         window: (json['stabilityWindow'] as num?)?.toInt() ?? 5,
@@ -62,5 +68,6 @@ class ScaleThresholds {
         windowMs: (json['stabilityWindowMs'] as num?)?.toInt() ?? 1500,
         minWeightG: (json['minWeightG'] as num?)?.toInt() ?? 50,
         staleAfterMs: (json['staleAfterMs'] as num?)?.toInt() ?? 5000,
+        streaming: json['streaming'] as bool? ?? true,
       );
 }

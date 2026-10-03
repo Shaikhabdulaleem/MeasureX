@@ -49,6 +49,9 @@ export class ScalesService {
         connection: dto.connection,
         adapterKey: dto.adapterKey,
         approved: dto.approved ?? false,
+        // One-shot by default for HID keyboard scales; streaming for BLE/Classic
+        // (continuous). Admin may override per model (PRD §9).
+        streaming: dto.streaming ?? dto.connection !== 'hid',
         ...thresholdData(dto),
       },
     });
@@ -75,6 +78,7 @@ export class ScalesService {
         ...(dto.connection !== undefined ? { connection: dto.connection } : {}),
         ...(dto.adapterKey !== undefined ? { adapterKey: dto.adapterKey } : {}),
         ...(dto.approved !== undefined ? { approved: dto.approved } : {}),
+        ...(dto.streaming !== undefined ? { streaming: dto.streaming } : {}),
         ...thresholdData(dto),
       },
     });
@@ -127,6 +131,7 @@ export function serializeScale(s: Scale) {
     connection: s.connection,
     adapterKey: s.adapterKey,
     approved: s.approved,
+    streaming: s.streaming,
     stabilityWindow: s.stabilityWindow,
     stabilityToleranceG: s.stabilityToleranceG,
     stabilityWindowMs: s.stabilityWindowMs,

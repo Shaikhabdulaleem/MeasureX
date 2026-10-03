@@ -1184,6 +1184,7 @@ components:
         connection: { $ref: '#/components/schemas/ScaleConnection' }
         adapterKey: { type: string, description: Which mobile adapter handles this model (e.g. simulated, hid, ble, classic) }
         approved: { type: boolean }
+        streaming: { type: boolean, description: Streaming (continuous) vs one-shot (HID / settle-then-send). One-shot values persist until the next reading, a drop below minWeightG, or disconnect. }
         stabilityWindow: { type: integer, description: Consecutive readings in the stable window, example: 5 }
         stabilityToleranceG: { type: integer, description: Max spread (g) within the window, example: 20 }
         stabilityWindowMs: { type: integer, description: Minimum duration (ms) of the window, example: 1500 }
@@ -1198,6 +1199,7 @@ components:
         connection: { $ref: '#/components/schemas/ScaleConnection' }
         adapterKey: { type: string }
         approved: { type: boolean, default: false }
+        streaming: { type: boolean, description: Defaults by connection (HID → one-shot) when omitted. }
         stabilityWindow: { type: integer }
         stabilityToleranceG: { type: integer }
         stabilityWindowMs: { type: integer }
@@ -1211,6 +1213,7 @@ components:
         connection: { $ref: '#/components/schemas/ScaleConnection' }
         adapterKey: { type: string }
         approved: { type: boolean }
+        streaming: { type: boolean }
         stabilityWindow: { type: integer }
         stabilityToleranceG: { type: integer }
         stabilityWindowMs: { type: integer }
