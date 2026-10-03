@@ -1,6 +1,9 @@
-import { Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable } from '@nestjs/common';
 import { DEFAULT_CHARGEABLE_STEP_KG, DEFAULT_DIVISOR } from '@measurex/shared';
 import { PrismaService } from '../prisma/prisma.service';
+import { AuditService } from '../audit/audit.service';
+import { AuthUser } from '../auth/decorators/current-user.decorator';
+import { ConfigUpdateDto } from './dto/config-update.dto';
 
 /**
  * Configuration keys stored in the `config` table (scope = global for M1).
@@ -51,9 +54,84 @@ const DEFAULTS: EffectiveConfig = {
   retention: { photoMonths: 12, localPurgeDays: 7 },
 };
 
+/** Maps an EffectiveConfig-shaped field to its stored config key. */
+const FIELD_TO_KEY: Record<string, string> = {
+  awbRegex: CONFIG_KEYS.awbRegex,
+  volumetricDivisor: CONFIG_KEYS.volumetricDivisor,
+  chargeableStepKg: CONFIG_KEYS.chargeableStepKg,
+  weightRequired: CONFIG_KEYS.actualWeightRequired,
+  mediumConfirmAllowed: CONFIG_KEYS.mediumConfirmAllowed,
+  minDimensionCm: CONFIG_KEYS.minDimensionCm,
+  maxDimensionCm: CONFIG_KEYS.maxDimensionCm,
+  idleAutoCompleteMinutes: CONFIG_KEYS.idleAutoCompleteMinutes,
+  photoRetentionMonths: CONFIG_KEYS.photoRetentionMonths,
+  localPurgeDays: CONFIG_KEYS.localPurgeDays,
+};
+
 @Injectable()
 export class ConfigService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly audit: AuditService,
+  ) {}
+
+  /**
+   * PUT /config — validate and persist changed global keys (Admin, PRD §11,
+   * §14). Only the fields present are changed; each is upserted as a global
+   * config row, and the before/after effective config is audited.
+   */
+  async updateConfig(dto: ConfigUpdateDto, actor: AuthUser, ip?: string): Promise<EffectiveConfig> {
+    const before = await this.getEffectiveConfig();
+
+    // Cross-field validation against the merged result (so a partial update that
+    // leaves max below an unchanged min is still rejected).
+    const merged = { ...before } as EffectiveConfig;
+    if (dto.minDimensionCm !== undefined) merged.minDimensionCm = dto.minDimensionCm;
+    if (dto.maxDimensionCm !== undefined) merged.maxDimensionCm = dto.maxDimensionCm;
+    if (merged.maxDimensionCm < merged.minDimensionCm) {
+      throw new BadRequestException({
+        code: 'INVALID_CONFIG',
+        message: 'maxDimensionCm must be >= minDimensionCm',
+      });
+    }
+    if (dto.awbRegex !== undefined) {
+      try {
+        new RegExp(dto.awbRegex);
+      } catch {
+        throw new BadRequestException({
+          code: 'INVALID_CONFIG',
+          message: 'awbRegex is not a valid regular expression',
+        });
+      }
+    }
+
+    const entries = Object.entries(dto).filter(([, v]) => v !== undefined);
+    if (entries.length === 0) return before;
+
+    await this.prisma.$transaction(
+      entries.map(([field, value]) => {
+        const key = FIELD_TO_KEY[field];
+        return this.prisma.config.upsert({
+          where: { key },
+          update: { value: value as never, updatedBy: actor.sub },
+          create: { key, value: value as never, scope: 'global', updatedBy: actor.sub },
+        });
+      }),
+    );
+
+    const after = await this.getEffectiveConfig();
+    await this.audit.record({
+      userId: actor.sub,
+      role: actor.role as never,
+      entity: 'config',
+      entityId: 'global',
+      action: 'config_updated',
+      before,
+      after,
+      ip,
+    });
+    return after;
+  }
 
   /** Merge global config rows over the built-in defaults. */
   async getEffectiveConfig(): Promise<EffectiveConfig> {

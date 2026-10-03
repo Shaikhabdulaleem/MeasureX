@@ -16,6 +16,11 @@ import { ScalesModule } from './scales/scales.module';
 import { SyncModule } from './sync/sync.module';
 import { EventsModule } from './events/events.module';
 import { JobsModule } from './jobs/jobs.module';
+import { UsersModule } from './users/users.module';
+import { BranchesModule } from './branches/branches.module';
+import { StationsModule } from './stations/stations.module';
+import { ReportsModule } from './reports/reports.module';
+import { DashboardModule } from './dashboard/dashboard.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { PasswordChangeGuard } from './auth/guards/password-change.guard';
 import { RolesGuard } from './auth/guards/roles.guard';
@@ -38,6 +43,11 @@ import { RolesGuard } from './auth/guards/roles.guard';
     SyncModule,
     EventsModule,
     JobsModule,
+    UsersModule,
+    BranchesModule,
+    StationsModule,
+    ReportsModule,
+    DashboardModule,
   ],
   providers: [
     // Order matters: authenticate → enforce forced password change → roles.

@@ -638,9 +638,15 @@ paths:
   /users/{id}:
     parameters:
       - $ref: '#/components/parameters/IdPath'
+    get:
+      tags: [Admin]
+      summary: Get a user
+      responses:
+        '200': { $ref: '#/components/responses/UserOk' }
+        '404': { $ref: '#/components/responses/NotFound' }
     patch:
       tags: [Admin]
-      summary: Update a user (edit, reset password, unlock)
+      summary: Update a user (name, role, home branch, admin scope, status)
       requestBody:
         required: true
         content:
@@ -648,11 +654,36 @@ paths:
             schema: { $ref: '#/components/schemas/UserUpdate' }
       responses:
         '200': { $ref: '#/components/responses/UserOk' }
-    delete:
+  /users/{id}/reset-password:
+    post:
       tags: [Admin]
-      summary: Soft-delete a user
+      summary: Reset a user's password (forces a change; returns a temp password once)
+      parameters: [ { $ref: '#/components/parameters/IdPath' } ]
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                password: { type: string, minLength: 8, description: Optional explicit temp password }
       responses:
-        '204': { description: Deleted }
+        '200':
+          description: Temporary password (shown once)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  id: { type: string, format: uuid }
+                  tempPassword: { type: string }
+  /users/{id}/unlock:
+    post:
+      tags: [Admin]
+      summary: Unlock a user (clear failed-login count and lockout)
+      parameters: [ { $ref: '#/components/parameters/IdPath' } ]
+      responses:
+        '200': { $ref: '#/components/responses/UserOk' }
 
   /branches:
     get:
@@ -839,87 +870,119 @@ paths:
   /devices:
     get:
       tags: [Admin]
-      summary: List devices
+      summary: List devices (Admin). Filter by blocked / tier.
+      parameters:
+        - { in: query, name: blocked, schema: { type: boolean } }
+        - { in: query, name: tier, schema: { $ref: '#/components/schemas/DeviceTier' } }
       responses:
         '200':
           description: Devices
           content:
             application/json:
-              schema: { type: array, items: { $ref: '#/components/schemas/Device' } }
-  /devices/{id}:
-    parameters: [ { $ref: '#/components/parameters/IdPath' } ]
-    patch:
+              schema:
+                type: object
+                properties:
+                  items: { type: array, items: { $ref: '#/components/schemas/Device' } }
+  /devices/{id}/block:
+    post:
       tags: [Admin]
-      summary: Update a device (e.g. block)
+      summary: Block or unblock a device (Admin, audited)
+      parameters: [ { $ref: '#/components/parameters/IdPath' } ]
       requestBody:
-        required: true
+        required: false
         content:
           application/json:
             schema:
               type: object
               properties:
-                blocked: { type: boolean }
+                blocked: { type: boolean, default: true }
       responses:
         '200':
-          description: Updated
+          description: Updated device
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Device' }
+        '404': { $ref: '#/components/responses/NotFound' }
 
   /config:
     get:
       tags: [Admin]
-      summary: List configuration entries
-      parameters:
-        - { in: query, name: scope, schema: { $ref: '#/components/schemas/ConfigScope' } }
+      summary: Effective (merged) configuration. Any authenticated user may read.
       responses:
         '200':
-          description: Config entries
+          description: Effective configuration
           content:
             application/json:
-              schema: { type: array, items: { $ref: '#/components/schemas/ConfigEntry' } }
+              schema: { $ref: '#/components/schemas/EffectiveConfig' }
     put:
       tags: [Admin]
-      summary: Upsert a configuration entry (audited)
+      summary: Update global configuration (Admin, validated, audited)
+      description: >
+        Partial update — only the keys present are changed. Values are validated
+        (the AWB regex must compile; maxDimensionCm >= minDimensionCm) before the
+        change is persisted and audited with before/after.
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/ConfigEntry' }
+            schema: { $ref: '#/components/schemas/ConfigUpdate' }
       responses:
         '200':
-          description: Updated
+          description: The new effective configuration
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/ConfigEntry' }
+              schema: { $ref: '#/components/schemas/EffectiveConfig' }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
+
+  # ---------------------------------------------------------------- Dashboard
+  /dashboard/kpis:
+    get:
+      tags: [Reports]
+      summary: Headline KPIs for the dashboard (Team Leader / Admin), branch-scoped
+      parameters:
+        - { in: query, name: dateFrom, schema: { type: string, format: date-time } }
+        - { in: query, name: dateTo, schema: { type: string, format: date-time } }
+      responses:
+        '200':
+          description: A today block and a range block (range defaults to last 7 days)
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  today: { $ref: '#/components/schemas/Kpis' }
+                  range: { $ref: '#/components/schemas/Kpis' }
 
   # ---------------------------------------------------------------- Reports
   /reports/{type}:
     get:
       tags: [Reports]
-      summary: Generate a report (xlsx or csv)
+      summary: Build and stream a report as xlsx or csv (Team Leader / Admin)
+      description: >
+        Returns the file inline (Content-Disposition: attachment). Branch-scoped;
+        the export is audited (report_exported).
       parameters:
         - in: path
           name: type
           required: true
           schema:
             type: string
-            enum: [daily_volume, productivity, accuracy, flags, manual_entry_rate]
+            enum: [daily-volume, productivity, flags, manual-entry-rate]
         - { in: query, name: format, schema: { type: string, enum: [xlsx, csv], default: xlsx } }
         - { in: query, name: branchId, schema: { type: string, format: uuid } }
         - { in: query, name: dateFrom, schema: { type: string, format: date-time } }
         - { in: query, name: dateTo, schema: { type: string, format: date-time } }
       responses:
-        '202':
-          description: Report job queued; poll or receive a signed download URL
+        '200':
+          description: The report file
           content:
-            application/json:
-              schema:
-                type: object
-                properties:
-                  jobId: { type: string }
-                  status: { type: string, enum: [queued, processing, ready] }
-                  downloadUrl: { type: string, format: uri, nullable: true }
+            application/vnd.openxmlformats-officedocument.spreadsheetml.sheet:
+              schema: { type: string, format: binary }
+            text/csv:
+              schema: { type: string, format: binary }
+        '400': { $ref: '#/components/responses/BadRequest' }
+        '403': { $ref: '#/components/responses/Forbidden' }
 
   # ---------------------------------------------------------------- Audit
   /audit:
@@ -1176,6 +1239,34 @@ components:
         scope: { $ref: '#/components/schemas/ConfigScope' }
         scopeId: { type: string, nullable: true }
         updatedBy: { type: string, format: uuid, nullable: true }
+    ConfigUpdate:
+      type: object
+      description: Partial — only the keys present are changed (PUT /config).
+      properties:
+        awbRegex: { type: string }
+        volumetricDivisor: { type: integer, minimum: 1 }
+        chargeableStepKg: { type: number, minimum: 0.001 }
+        weightRequired: { type: boolean }
+        mediumConfirmAllowed: { type: boolean }
+        minDimensionCm: { type: integer, minimum: 1 }
+        maxDimensionCm: { type: integer, minimum: 1 }
+        idleAutoCompleteMinutes: { type: integer, minimum: 1 }
+        photoRetentionMonths: { type: integer, minimum: 1 }
+        localPurgeDays: { type: integer, minimum: 1 }
+    Kpis:
+      type: object
+      description: Headline KPIs for a time window (GET /dashboard/kpis).
+      properties:
+        from: { type: string, format: date-time }
+        to: { type: string, format: date-time }
+        shipments: { type: integer }
+        packages: { type: integer }
+        cbm: { type: number }
+        chargeableG: { type: integer }
+        manualEntryRate: { type: number, description: 0..1 over active packages }
+        retakeRate: { type: number, description: retake events / measure_start events }
+        flagsOpen: { type: integer }
+        remeasuresOpen: { type: integer }
 
     # ---- Reference entities ----
     Branch:
@@ -1218,11 +1309,10 @@ components:
         role: { $ref: '#/components/schemas/Role' }
         homeBranchId: { type: string, format: uuid }
         adminScope:
-          oneOf:
-            - { type: array, items: { type: string } }
-            - { type: string, enum: [all] }
-          nullable: true
-        initialPassword: { type: string }
+          type: array
+          items: { type: string }
+          description: Required for role=admin (branch ids, or ["all"]); ignored otherwise.
+        password: { type: string, minLength: 8, description: Optional; a temp password is generated if omitted }
     UserUpdate:
       type: object
       properties:
@@ -1230,13 +1320,9 @@ components:
         role: { $ref: '#/components/schemas/Role' }
         homeBranchId: { type: string, format: uuid }
         adminScope:
-          oneOf:
-            - { type: array, items: { type: string } }
-            - { type: string, enum: [all] }
-          nullable: true
+          type: array
+          items: { type: string }
         status: { type: string, enum: [active, inactive] }
-        resetPassword: { type: boolean, description: Issue a new temp password + force change }
-        unlock: { type: boolean, description: Clear failed_logins and locked_until }
     Station:
       type: object
       properties:
