@@ -71,11 +71,17 @@ class CaptureController extends StateNotifier<CaptureState> {
   }
 
   /// Save a manually-measured package: create it, then upload its photo.
+  /// Weight (PRD §9): [weightSource] is `none`, `scale` (with [scaleId]) or
+  /// `manual` (Team Leader / Admin, with [weightReason]).
   Future<PackageModel> savePackage({
     required int lengthMm,
     required int widthMm,
     required int heightMm,
     required List<int> photoBytes,
+    String weightSource = 'none',
+    int? actualWeightG,
+    String? scaleId,
+    String? weightReason,
     String contentType = 'image/jpeg',
   }) async {
     final awb = state.awb;
@@ -91,6 +97,10 @@ class CaptureController extends StateNotifier<CaptureState> {
       lengthMm: lengthMm,
       widthMm: widthMm,
       heightMm: heightMm,
+      weightSource: weightSource,
+      actualWeightG: actualWeightG,
+      scaleId: scaleId,
+      weightReason: weightReason,
       confirmedAt: DateTime.now().toUtc().toIso8601String(),
       idempotencyKey: idempotencyKey,
     );

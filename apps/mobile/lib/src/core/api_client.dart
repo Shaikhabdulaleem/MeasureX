@@ -136,7 +136,19 @@ class ApiClient {
     return AwbLookupResult.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
   }
 
+  /// Approved scales (the model list a station binds to). The server returns
+  /// only approved scales unless an admin passes all=true (PRD §9).
+  Future<List<ScaleModel>> listScales(String token) async {
+    final res = await _client.get(_uri('/scales'), headers: _authHeaders(token));
+    if (res.statusCode != 200) throw _error(res);
+    return (jsonDecode(res.body) as List<dynamic>)
+        .map((e) => ScaleModel.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
   /// Create a package (idempotent). [id] and [idempotencyKey] are client-generated.
+  /// Weight: [weightSource] is `none`, `scale` (needs [scaleId]) or `manual`
+  /// (Team Leader / Admin only, needs [weightReason]); PRD §9.
   Future<PackageModel> createPackage(
     String token,
     String awb, {
@@ -148,6 +160,9 @@ class ApiClient {
     required String idempotencyKey,
     String method = 'manual',
     String weightSource = 'none',
+    int? actualWeightG,
+    String? scaleId,
+    String? weightReason,
     String? deviceId,
   }) async {
     final res = await _client.post(
@@ -160,6 +175,9 @@ class ApiClient {
         'heightMm': heightMm,
         'method': method,
         'weightSource': weightSource,
+        if (actualWeightG != null) 'actualWeightG': actualWeightG,
+        if (scaleId != null) 'scaleId': scaleId,
+        if (weightReason != null) 'weightReason': weightReason,
         'confirmedAt': confirmedAt,
         if (deviceId != null) 'deviceId': deviceId,
       }),
@@ -325,6 +343,8 @@ class MeasurementVersionModel {
     required this.chargeableG,
     required this.divisorUsed,
     this.actualWeightG,
+    this.weightSource,
+    this.scaleId,
     this.method,
     this.confidence,
   });
@@ -340,6 +360,8 @@ class MeasurementVersionModel {
   final int chargeableG;
   final int divisorUsed;
   final int? actualWeightG;
+  final String? weightSource;
+  final String? scaleId;
   final String? method;
   final String? confidence;
 
@@ -356,8 +378,51 @@ class MeasurementVersionModel {
         chargeableG: (json['chargeableG'] as num).toInt(),
         divisorUsed: (json['divisorUsed'] as num).toInt(),
         actualWeightG: (json['actualWeightG'] as num?)?.toInt(),
+        weightSource: json['weightSource'] as String?,
+        scaleId: json['scaleId'] as String?,
         method: json['method'] as String?,
         confidence: json['confidence'] as String?,
+      );
+}
+
+/// An approved scale model the station can bind to (PRD §9). Carries the
+/// per-model stability thresholds the mobile StabilityDetector uses.
+class ScaleModel {
+  ScaleModel({
+    required this.id,
+    required this.model,
+    required this.connection,
+    required this.adapterKey,
+    required this.approved,
+    required this.stabilityWindow,
+    required this.stabilityToleranceG,
+    required this.stabilityWindowMs,
+    required this.minWeightG,
+    required this.staleAfterMs,
+  });
+
+  final String id;
+  final String model;
+  final String connection;
+  final String adapterKey;
+  final bool approved;
+  final int stabilityWindow;
+  final int stabilityToleranceG;
+  final int stabilityWindowMs;
+  final int minWeightG;
+  final int staleAfterMs;
+
+  factory ScaleModel.fromJson(Map<String, dynamic> json) => ScaleModel(
+        id: json['id'] as String,
+        model: json['model'] as String,
+        connection: json['connection'] as String,
+        adapterKey: json['adapterKey'] as String,
+        approved: json['approved'] as bool? ?? false,
+        stabilityWindow: (json['stabilityWindow'] as num?)?.toInt() ?? 5,
+        stabilityToleranceG: (json['stabilityToleranceG'] as num?)?.toInt() ?? 20,
+        stabilityWindowMs: (json['stabilityWindowMs'] as num?)?.toInt() ?? 1500,
+        minWeightG: (json['minWeightG'] as num?)?.toInt() ?? 50,
+        staleAfterMs: (json['staleAfterMs'] as num?)?.toInt() ?? 5000,
       );
 }
 

@@ -41,6 +41,13 @@ function createPackage(awb: string, body: Record<string, unknown>, key: string) 
 beforeAll(async () => {
   app = await buildApp();
   server = app.getHttpServer();
+  // This M1 suite exercises dimensions, numbering and billing without a weight,
+  // so it runs with actual_weight_required off (weight rules live in scale.e2e).
+  await prisma.config.upsert({
+    where: { key: 'actual_weight_required' },
+    update: { value: false },
+    create: { key: 'actual_weight_required', value: false, scope: 'global' },
+  });
   const branchId = await createBranch(prisma, 'CAP');
   labour = await createAndLogin(prisma, server, branchId, {
     employeeId: uniqueEmployeeId('CAP_LAB'),

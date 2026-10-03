@@ -12,6 +12,7 @@ import { PackagesModule } from './packages/packages.module';
 import { ShipmentsModule } from './shipments/shipments.module';
 import { PhotosModule } from './photos/photos.module';
 import { ReviewModule } from './review/review.module';
+import { ScalesModule } from './scales/scales.module';
 import { JobsModule } from './jobs/jobs.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { PasswordChangeGuard } from './auth/guards/password-change.guard';
@@ -31,6 +32,7 @@ import { RolesGuard } from './auth/guards/roles.guard';
     ShipmentsModule,
     PhotosModule,
     ReviewModule,
+    ScalesModule,
     JobsModule,
   ],
   providers: [

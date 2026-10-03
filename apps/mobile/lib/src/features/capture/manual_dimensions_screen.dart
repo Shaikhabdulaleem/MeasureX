@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:image_picker/image_picker.dart';
 import '../../l10n/app_localizations.dart';
+import '../scale/scale_ui.dart';
 import 'capture_controller.dart';
 import 'review_screen.dart';
 import 'widgets.dart';
@@ -93,6 +94,9 @@ class _ManualDimensionsScreenState extends ConsumerState<ManualDimensionsScreen>
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
+              // Weight is captured from the scale in parallel with dimensions.
+              const ScaleStatusChip(showWeight: true),
+              const SizedBox(height: 16),
               _dimField(_length, l10n.length, l10n),
               const SizedBox(height: 12),
               _dimField(_width, l10n.width, l10n),

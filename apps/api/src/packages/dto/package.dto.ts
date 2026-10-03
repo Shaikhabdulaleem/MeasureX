@@ -1,4 +1,14 @@
-import { IsDateString, IsEnum, IsInt, IsObject, IsOptional, IsUUID, Min } from 'class-validator';
+import {
+  IsDateString,
+  IsEnum,
+  IsInt,
+  IsObject,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Min,
+  MinLength,
+} from 'class-validator';
 import { Confidence, MeasurementMethod, WeightSource } from '@prisma/client';
 
 /**
@@ -48,6 +58,15 @@ export class PackageCreateDto {
   @IsOptional()
   @IsUUID()
   scaleId?: string;
+
+  /**
+   * Required when `weightSource = manual` (Team Leader / Admin only). Drives the
+   * `manual_weight` flag and the audit reason (PRD §9).
+   */
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  weightReason?: string;
 
   @IsOptional()
   @IsEnum(MeasurementMethod)

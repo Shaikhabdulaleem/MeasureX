@@ -252,9 +252,19 @@ model Scale {
   connection ScaleConnection
   adapterKey String          @map("adapter_key")
   approved   Boolean         @default(false)
-  createdAt  DateTime        @default(now()) @map("created_at")
-  updatedAt  DateTime        @updatedAt @map("updated_at")
-  deletedAt  DateTime?       @map("deleted_at")
+
+  // Stability thresholds, per scale model (PRD §9). Defaults match the PRD's
+  // "stable weight rule"; Admin may tune them per model. The mobile
+  // StabilityDetector reads these so the capture flow never changes per scale.
+  stabilityWindow     Int @default(5) @map("stability_window")       // consecutive readings
+  stabilityToleranceG Int @default(20) @map("stability_tolerance_g") // max spread within the window
+  stabilityWindowMs   Int @default(1500) @map("stability_window_ms") // min duration of the window
+  minWeightG          Int @default(50) @map("min_weight_g")          // ignore noise below this
+  staleAfterMs        Int @default(5000) @map("stale_after_ms")      // a reading older than this is stale
+
+  createdAt DateTime  @default(now()) @map("created_at")
+  updatedAt DateTime  @updatedAt @map("updated_at")
+  deletedAt DateTime? @map("deleted_at")
 
   stations            Station[]
   measurementVersions MeasurementVersion[]

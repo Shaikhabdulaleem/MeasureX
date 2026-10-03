@@ -1,8 +1,14 @@
-import { BadRequestException, ConflictException, Injectable } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  ForbiddenException,
+  Injectable,
+} from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { ConfigService } from '../config/config.service';
 import { AuditService } from '../audit/audit.service';
+import { ScalesService } from '../scales/scales.service';
 import { AuthUser } from '../auth/decorators/current-user.decorator';
 import { assertValidAwb } from '../common/awb';
 import { computeVersionBilling } from '../common/billing';
@@ -26,6 +32,7 @@ export class PackagesService {
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
     private readonly audit: AuditService,
+    private readonly scales: ScalesService,
   ) {}
 
   /**
@@ -43,7 +50,7 @@ export class PackagesService {
     const awb = assertValidAwb(rawAwb, cfg.awbRegex);
 
     this.assertDimensionsInRange(dto, cfg.minDimensionCm, cfg.maxDimensionCm);
-    this.assertWeight(dto, cfg.weightRequired);
+    await this.assertWeightRules(dto, cfg.weightRequired, user);
 
     const outcome = await this.createWithRetry(awb, dto, idempotencyKey, user, cfg);
 
@@ -58,6 +65,20 @@ export class PackagesService {
         ip,
         deviceId: dto.deviceId ?? null,
       });
+
+      if (dto.weightSource === 'manual') {
+        await this.audit.record({
+          userId: user.sub,
+          role: user.role as never,
+          entity: 'package',
+          entityId: outcome.package.id,
+          action: 'manual_weight_entered',
+          after: { actualWeightG: dto.actualWeightG ?? null },
+          reason: dto.weightReason ?? null,
+          ip,
+          deviceId: dto.deviceId ?? null,
+        });
+      }
     }
 
     return { package: serializePackage(outcome.package as PackageRow), replayed: outcome.replayed };
@@ -200,6 +221,26 @@ export class PackagesService {
           data: { currentVersionId: version.id },
         });
 
+        // Manual weight (TL/Admin, validated above) raises the `manual_weight`
+        // flag so it surfaces on the dashboard and TL queue (PRD §9, §11).
+        if (dto.weightSource === 'manual') {
+          await tx.flag.create({
+            data: {
+              shipmentId: shipment.id,
+              packageId: dto.id,
+              type: 'manual_weight',
+              status: 'open',
+              note: dto.weightReason ?? null,
+            },
+          });
+          if (!shipment.flags.includes('manual_weight')) {
+            await tx.shipment.update({
+              where: { id: shipment.id },
+              data: { flags: { set: [...shipment.flags, 'manual_weight'] } },
+            });
+          }
+        }
+
         await recomputeShipmentTotals(tx, shipment.id);
 
         const created = await tx.package.findUniqueOrThrow({
@@ -250,14 +291,66 @@ export class PackagesService {
     }
   }
 
-  private assertWeight(dto: PackageCreateDto, weightRequired: boolean): void {
-    if (!weightRequired) return;
-    const hasWeight = dto.actualWeightG != null && (dto.weightSource ?? 'none') !== 'none';
-    if (!hasWeight) {
-      throw new BadRequestException({
-        code: 'WEIGHT_REQUIRED',
-        message: 'Actual weight is required by configuration',
-      });
+  /**
+   * Weight rules (PRD §9):
+   *  - `scale`  → an approved `scaleId` and a weight value are required.
+   *  - `manual` → Team Leader / Admin only, with a reason (→ `manual_weight`
+   *    flag + audit). Labour is rejected.
+   *  - when `actual_weight_required` is on, a usable weight must be present.
+   */
+  private async assertWeightRules(
+    dto: PackageCreateDto,
+    weightRequired: boolean,
+    user: AuthUser,
+  ): Promise<void> {
+    const source = dto.weightSource ?? 'none';
+
+    if (source === 'scale') {
+      if (!dto.scaleId) {
+        throw new BadRequestException({
+          code: 'SCALE_ID_REQUIRED',
+          message: 'A scaleId is required when weightSource is "scale"',
+        });
+      }
+      if (dto.actualWeightG == null) {
+        throw new BadRequestException({
+          code: 'WEIGHT_REQUIRED',
+          message: 'A scale weight requires actualWeightG',
+        });
+      }
+      // Only an approved scale may be used (PRD §9); throws if missing/unapproved.
+      await this.scales.getApprovedOrThrow(dto.scaleId);
+    }
+
+    if (source === 'manual') {
+      if (user.role !== 'team_leader' && user.role !== 'admin') {
+        throw new ForbiddenException({
+          code: 'MANUAL_WEIGHT_FORBIDDEN',
+          message: 'Manual weight entry is restricted to Team Leader and Admin',
+        });
+      }
+      if (!dto.weightReason?.trim()) {
+        throw new BadRequestException({
+          code: 'WEIGHT_REASON_REQUIRED',
+          message: 'A reason is required for manual weight entry',
+        });
+      }
+      if (dto.actualWeightG == null) {
+        throw new BadRequestException({
+          code: 'WEIGHT_REQUIRED',
+          message: 'A manual weight requires actualWeightG',
+        });
+      }
+    }
+
+    if (weightRequired) {
+      const hasWeight = dto.actualWeightG != null && source !== 'none';
+      if (!hasWeight) {
+        throw new BadRequestException({
+          code: 'WEIGHT_REQUIRED',
+          message: 'Actual weight is required by configuration',
+        });
+      }
     }
   }
 }

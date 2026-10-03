@@ -4,6 +4,8 @@ import '../../l10n/app_localizations.dart';
 import '../auth/auth_controller.dart';
 import '../capture/scanner_screen.dart';
 import '../history/history_screen.dart';
+import '../scale/scale_settings_screen.dart';
+import '../scale/scale_ui.dart';
 
 class HomeScreen extends ConsumerWidget {
   const HomeScreen({super.key});
@@ -25,6 +27,13 @@ class HomeScreen extends ConsumerWidget {
             ),
           ),
           IconButton(
+            tooltip: t.bluetoothScale,
+            icon: const Icon(Icons.scale),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const ScaleSettingsScreen()),
+            ),
+          ),
+          IconButton(
             tooltip: t.signOut,
             icon: const Icon(Icons.logout),
             onPressed: () => ref.read(authControllerProvider.notifier).logout(),
@@ -41,7 +50,6 @@ class HomeScreen extends ConsumerWidget {
                 Text('${t.welcome}, ${user.name}',
                     style: Theme.of(context).textTheme.titleMedium),
               const SizedBox(height: 24),
-              // Status placeholders (not wired in M0).
               Row(
                 children: [
                   Expanded(
@@ -52,13 +60,8 @@ class HomeScreen extends ConsumerWidget {
                     ),
                   ),
                   const SizedBox(width: 12),
-                  Expanded(
-                    child: _StatusChip(
-                      icon: Icons.scale,
-                      label: t.scaleStatus,
-                      value: t.statusNotConnected,
-                    ),
-                  ),
+                  // Live scale status (PRD §9) — tap to open scale settings.
+                  const Expanded(child: ScaleStatusChip()),
                 ],
               ),
               const Spacer(),

@@ -26,8 +26,8 @@ const CONFIG: Array<{ key: string; value: unknown }> = [
   { key: 'awb_regex', value: '^AY\\d{11}$' },
   { key: 'volumetric_divisor', value: 5000 },
   { key: 'chargeable_step_kg', value: 0.5 },
-  // Scale lands in M2; actual weight is not required to save in M1 (PRD A6, M1 scope).
-  { key: 'actual_weight_required', value: false },
+  // Actual weight required to save by default (PRD A6); scale capture lands in M2.
+  { key: 'actual_weight_required', value: true },
   { key: 'medium_confirm_allowed', value: true },
   { key: 'min_dimension_cm', value: 1 },
   { key: 'max_dimension_cm', value: 300 },
@@ -69,6 +69,23 @@ async function main(): Promise<void> {
       where: { key: c.key },
       update: { value: c.value as object },
       create: { key: c.key, value: c.value as object, scope: 'global' },
+    });
+  }
+
+  // DEV ONLY: an approved "simulated" scale so the M2 scale flow can be
+  // exercised end-to-end without hardware (the simulated adapter is dev-only).
+  // Real scale models are added by an Admin once chosen (PRD §9, Q6).
+  const existingSim = await prisma.scale.findFirst({
+    where: { adapterKey: 'simulated', deletedAt: null },
+  });
+  if (!existingSim) {
+    await prisma.scale.create({
+      data: {
+        model: 'Simulated Scale (dev)',
+        connection: 'hid',
+        adapterKey: 'simulated',
+        approved: true,
+      },
     });
   }
 

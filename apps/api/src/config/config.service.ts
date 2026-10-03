@@ -26,7 +26,7 @@ export interface EffectiveConfig {
   volumetricDivisor: number;
   dimensionRounding: 'ceil';
   chargeableStepKg: number;
-  /** Actual (scale) weight required to save. False for M1 (scale lands in M2). */
+  /** Actual weight required to save (PRD A6). On by default once scale lands (M2). */
   weightRequired: boolean;
   mediumConfirmAllowed: boolean;
   minDimensionCm: number;
@@ -43,7 +43,7 @@ const DEFAULTS: EffectiveConfig = {
   volumetricDivisor: DEFAULT_DIVISOR,
   dimensionRounding: 'ceil',
   chargeableStepKg: DEFAULT_CHARGEABLE_STEP_KG,
-  weightRequired: false,
+  weightRequired: true,
   mediumConfirmAllowed: true,
   minDimensionCm: 1,
   maxDimensionCm: 300,

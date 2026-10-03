@@ -706,8 +706,17 @@ paths:
 
   /scales:
     get:
-      tags: [Admin]
+      tags: [Scales]
       summary: List scales (approved-model list)
+      description: >
+        Any authenticated user may read the approved-model list (needed to
+        select a scale). Admins may pass `all=true` to include unapproved models.
+      parameters:
+        - name: all
+          in: query
+          required: false
+          schema: { type: boolean }
+          description: Admin only — include unapproved models.
       responses:
         '200':
           description: Scales
@@ -716,12 +725,12 @@ paths:
               schema: { type: array, items: { $ref: '#/components/schemas/Scale' } }
     post:
       tags: [Admin]
-      summary: Create a scale model entry
+      summary: Create a scale model entry (Admin only)
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Scale' }
+            schema: { $ref: '#/components/schemas/ScaleCreate' }
       responses:
         '201':
           description: Created
@@ -730,14 +739,23 @@ paths:
               schema: { $ref: '#/components/schemas/Scale' }
   /scales/{id}:
     parameters: [ { $ref: '#/components/parameters/IdPath' } ]
+    get:
+      tags: [Scales]
+      summary: Get a scale
+      responses:
+        '200':
+          description: Scale
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Scale' }
     patch:
       tags: [Admin]
-      summary: Update a scale (e.g. mark approved)
+      summary: Update a scale — mark approved / tune thresholds (Admin only)
       requestBody:
         required: true
         content:
           application/json:
-            schema: { $ref: '#/components/schemas/Scale' }
+            schema: { $ref: '#/components/schemas/ScaleUpdate' }
       responses:
         '200':
           description: Updated
@@ -1157,12 +1175,47 @@ components:
         scaleId: { type: string, format: uuid, nullable: true }
     Scale:
       type: object
+      description: >
+        An approved-model record (PRD §9). Its stability thresholds drive the
+        mobile StabilityDetector so the capture flow never changes per model.
       properties:
         id: { type: string, format: uuid }
         model: { type: string }
         connection: { $ref: '#/components/schemas/ScaleConnection' }
+        adapterKey: { type: string, description: Which mobile adapter handles this model (e.g. simulated, hid, ble, classic) }
+        approved: { type: boolean }
+        stabilityWindow: { type: integer, description: Consecutive readings in the stable window, example: 5 }
+        stabilityToleranceG: { type: integer, description: Max spread (g) within the window, example: 20 }
+        stabilityWindowMs: { type: integer, description: Minimum duration (ms) of the window, example: 1500 }
+        minWeightG: { type: integer, description: Ignore readings below this (g), example: 50 }
+        staleAfterMs: { type: integer, description: A reading older than this (ms) is stale, example: 5000 }
+    ScaleCreate:
+      type: object
+      required: [model, connection, adapterKey]
+      description: Register a scale model (Admin only). Thresholds default per PRD §9 when omitted.
+      properties:
+        model: { type: string }
+        connection: { $ref: '#/components/schemas/ScaleConnection' }
+        adapterKey: { type: string }
+        approved: { type: boolean, default: false }
+        stabilityWindow: { type: integer }
+        stabilityToleranceG: { type: integer }
+        stabilityWindowMs: { type: integer }
+        minWeightG: { type: integer }
+        staleAfterMs: { type: integer }
+    ScaleUpdate:
+      type: object
+      description: Mark approved or tune thresholds (Admin only). All fields optional.
+      properties:
+        model: { type: string }
+        connection: { $ref: '#/components/schemas/ScaleConnection' }
         adapterKey: { type: string }
         approved: { type: boolean }
+        stabilityWindow: { type: integer }
+        stabilityToleranceG: { type: integer }
+        stabilityWindowMs: { type: integer }
+        minWeightG: { type: integer }
+        staleAfterMs: { type: integer }
 
     # ---- Shipments / packages / versions ----
     Shipment:
@@ -1226,7 +1279,8 @@ components:
         heightMm: { type: integer }
         actualWeightG: { type: integer, nullable: true }
         weightSource: { $ref: '#/components/schemas/WeightSource' }
-        scaleId: { type: string, format: uuid, nullable: true }
+        scaleId: { type: string, format: uuid, nullable: true, description: Required and must be approved when weightSource = scale }
+        weightReason: { type: string, nullable: true, description: Required when weightSource = manual (Team Leader / Admin only) }
         method: { $ref: '#/components/schemas/MeasurementMethod' }
         confidence: { $ref: '#/components/schemas/Confidence' }
         confidenceDetail: { type: object, additionalProperties: true, nullable: true }

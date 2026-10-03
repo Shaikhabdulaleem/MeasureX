@@ -50,6 +50,13 @@ function createPackage(token: string, awb: string, extra: Record<string, unknown
 beforeAll(async () => {
   app = await buildApp();
   server = app.getHttpServer();
+  // Access-control suite: packages are created without a weight, so weight is
+  // not required here (weight rules are covered by scale.e2e).
+  await prisma.config.upsert({
+    where: { key: 'actual_weight_required' },
+    update: { value: false },
+    create: { key: 'actual_weight_required', value: false, scope: 'global' },
+  });
   branchA = await createBranch(prisma, 'ACC_A');
   branchB = await createBranch(prisma, 'ACC_B');
   labourA = await createAndLogin(prisma, server, branchA, {
