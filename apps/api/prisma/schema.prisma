@@ -372,7 +372,15 @@ model Package {
   photos         Photo[]
   flags          Flag[]
 
-  @@unique([shipmentId, packageNumber])
+  // A shipment's package numbers are unique only among LIVE, ACTIVE packages.
+  // A remeasurement keeps the superseded old row AND a new active row sharing
+  // the same number (PRD §8), and a voided package keeps its number out of the
+  // active sequence — so the uniqueness is a PARTIAL index
+  // (WHERE status = 'active' AND deleted_at IS NULL), created in the migration
+  // `20261003140000_active_package_number_partial_unique` (Prisma cannot express
+  // a WHERE clause on @@unique). This @@index is the plain composite lookup;
+  // the partial UNIQUE constraint is added by raw SQL alongside it.
+  @@index([shipmentId, packageNumber])
   @@index([shipmentId])
   @@index([status])
   @@map("package")
