@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../l10n/app_localizations.dart';
-import '../../core/db/db_providers.dart';
 import '../auth/auth_controller.dart';
 import '../capture/scanner_screen.dart';
 import '../history/history_screen.dart';

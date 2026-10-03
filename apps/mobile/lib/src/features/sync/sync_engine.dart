@@ -46,7 +46,7 @@ class SyncEngine {
 
   Future<void> retryAll() async {
     await _db.retryAll();
-    await runNow();
+    await runOnce();
   }
 
   void runNow() {
@@ -95,7 +95,7 @@ class SyncEngine {
     } catch (e) {
       // Whole batch failed to reach the server — back every item off.
       for (final p in chunk) {
-        await _db.markFailed(p.id, e.toString(), _backoffFor(p.id));
+        await _db.markFailed(p.id, e.toString(), await _backoffFor(p.id));
       }
       return;
     }
@@ -104,18 +104,18 @@ class SyncEngine {
     for (final p in chunk) {
       final r = byId[p.id];
       if (r == null) {
-        await _db.markFailed(p.id, 'no result returned', _backoffFor(p.id));
+        await _db.markFailed(p.id, 'no result returned', await _backoffFor(p.id));
         continue;
       }
       if (r.status == SyncState.failed) {
-        await _db.markFailed(p.id, r.errorMessage ?? r.errorCode ?? 'failed', _backoffFor(p.id));
+        await _db.markFailed(p.id, r.errorMessage ?? r.errorCode ?? 'failed', await _backoffFor(p.id));
         continue;
       }
       // synced | conflict: the package data is on the server. Upload the photo
       // before marking terminal — a package is only done once its photo stored.
       final photoOk = await _uploadPhoto(token, p.id);
       if (!photoOk) {
-        await _db.markFailed(p.id, 'photo upload failed', _backoffFor(p.id));
+        await _db.markFailed(p.id, 'photo upload failed', await _backoffFor(p.id));
         continue;
       }
       if (r.status == SyncState.conflict) {

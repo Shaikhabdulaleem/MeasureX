@@ -46,7 +46,9 @@ class AuthController extends StateNotifier<AuthState> {
   AuthController(this._ref)
       : _api = _ref.read(apiClientProvider),
         _store = _ref.read(sessionStoreProvider),
-        super(const AuthState(status: AuthStatus.unknown));
+        // Starts unauthenticated; main() awaits bootstrap() before the first
+        // frame, so it is upgraded to authenticated before any UI is shown.
+        super(const AuthState(status: AuthStatus.unauthenticated));
 
   final Ref _ref;
   final ApiClient _api;
