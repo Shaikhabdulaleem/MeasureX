@@ -39,10 +39,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Version comes from the root package.json "packageManager" field
+      # (pnpm@9.12.0). Passing a `version` input too makes action-setup@v4 fail
+      # with ERR_PNPM_BAD_PM_VERSION ("Multiple versions of pnpm specified").
       - name: Install pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 9
 
       - name: Set up Node
         uses: actions/setup-node@v4
