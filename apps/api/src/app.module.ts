@@ -13,6 +13,8 @@ import { ShipmentsModule } from './shipments/shipments.module';
 import { PhotosModule } from './photos/photos.module';
 import { ReviewModule } from './review/review.module';
 import { ScalesModule } from './scales/scales.module';
+import { SyncModule } from './sync/sync.module';
+import { EventsModule } from './events/events.module';
 import { JobsModule } from './jobs/jobs.module';
 import { JwtAuthGuard } from './auth/guards/jwt-auth.guard';
 import { PasswordChangeGuard } from './auth/guards/password-change.guard';
@@ -33,6 +35,8 @@ import { RolesGuard } from './auth/guards/roles.guard';
     PhotosModule,
     ReviewModule,
     ScalesModule,
+    SyncModule,
+    EventsModule,
     JobsModule,
   ],
   providers: [

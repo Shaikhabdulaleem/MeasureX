@@ -12,7 +12,7 @@ import { ScalesService } from '../scales/scales.service';
 import { AuthUser } from '../auth/decorators/current-user.decorator';
 import { assertValidAwb } from '../common/awb';
 import { computeVersionBilling } from '../common/billing';
-import { nextPackageNumber } from '../common/package-number';
+import { RenumberChange, nextPackageNumber, renumberByConfirmedAt } from '../common/package-number';
 import { recomputeShipmentTotals } from '../common/totals';
 import { canAccessBranch } from '../common/scope';
 import { serializePackage, PackageRow } from '../common/serializers';
@@ -23,8 +23,38 @@ const PACKAGE_INCLUDE = {
   photos: { where: { deletedAt: null } },
 } satisfies Prisma.PackageInclude;
 
-/** How many times to retry a create that lost the package-number race. */
+/**
+ * How the server assigns the package number:
+ *  - `append`      : highest existing number + 1, stable once assigned — the
+ *                    online single-create path (PRD §7).
+ *  - `confirmed_at`: renumber the shipment's active packages by confirmed_at,
+ *                    correcting out-of-order offline arrivals — the sync path
+ *                    (PRD §10 rule 2).
+ */
+export type NumberingStrategy = 'append' | 'confirmed_at';
+
+/** How many times to retry an append create that lost the package-number race. */
 const MAX_NUMBER_RETRIES = 3;
+
+/** Outcome of a create: the package plus how the caller should report it. */
+export interface CreateOutcome {
+  package: ReturnType<typeof serializePackage>;
+  /** True when this was an idempotent replay (→ HTTP 200 vs 201). */
+  replayed: boolean;
+  /**
+   * True when the package landed on a shipment now measured by two or more
+   * devices — kept, but flagged `possible_duplicate` for the Team Leader
+   * (PRD §10 rule 3). The sync batch reports these items as `conflict` (§8).
+   */
+  duplicate: boolean;
+}
+
+interface TxResult {
+  package: PackageRow;
+  replayed: boolean;
+  duplicate: boolean;
+  renumbered: RenumberChange[];
+}
 
 @Injectable()
 export class PackagesService {
@@ -36,8 +66,9 @@ export class PackagesService {
   ) {}
 
   /**
-   * Create a package, idempotently (PRD §7, §10, §13). Returns the serialized
-   * package plus whether this was an idempotent replay (→ HTTP 200 vs 201).
+   * Create a package, idempotently (PRD §7, §10, §13). Used by both the single
+   * endpoint (POST /shipments/{awb}/packages) and the sync batch, so one bad
+   * item in a batch is just a failed result, not a rolled-back batch.
    */
   async create(
     rawAwb: string,
@@ -45,14 +76,15 @@ export class PackagesService {
     idempotencyKey: string,
     user: AuthUser,
     ip?: string,
-  ): Promise<{ package: ReturnType<typeof serializePackage>; replayed: boolean }> {
+    numbering: NumberingStrategy = 'append',
+  ): Promise<CreateOutcome> {
     const cfg = await this.config.getEffectiveConfig();
     const awb = assertValidAwb(rawAwb, cfg.awbRegex);
 
     this.assertDimensionsInRange(dto, cfg.minDimensionCm, cfg.maxDimensionCm);
     await this.assertWeightRules(dto, cfg.weightRequired, user);
 
-    const outcome = await this.createWithRetry(awb, dto, idempotencyKey, user, cfg);
+    const outcome = await this.createWithRetry(awb, dto, idempotencyKey, user, cfg, numbering);
 
     if (!outcome.replayed) {
       await this.audit.record({
@@ -61,7 +93,7 @@ export class PackagesService {
         entity: 'package',
         entityId: outcome.package.id,
         action: 'package_created',
-        after: serializePackage(outcome.package as PackageRow),
+        after: serializePackage(outcome.package),
         ip,
         deviceId: dto.deviceId ?? null,
       });
@@ -79,16 +111,51 @@ export class PackagesService {
           deviceId: dto.deviceId ?? null,
         });
       }
+
+      // Renumbering is a change to each moved package, so each is audited
+      // (CLAUDE.md rule 3). Only genuine moves are recorded.
+      for (const change of outcome.renumbered) {
+        if (change.id === outcome.package.id) continue; // its creation already covers v1
+        await this.audit.record({
+          userId: user.sub,
+          role: user.role as never,
+          entity: 'package',
+          entityId: change.id,
+          action: 'package_renumbered',
+          before: { packageNumber: change.from },
+          after: { packageNumber: change.to },
+          reason: 'confirmed_at renumber on sync',
+          ip,
+          deviceId: dto.deviceId ?? null,
+        });
+      }
+
+      if (outcome.duplicate) {
+        await this.audit.record({
+          userId: user.sub,
+          role: user.role as never,
+          entity: 'package',
+          entityId: outcome.package.id,
+          action: 'possible_duplicate_flagged',
+          after: { awb },
+          ip,
+          deviceId: dto.deviceId ?? null,
+        });
+      }
     }
 
-    return { package: serializePackage(outcome.package as PackageRow), replayed: outcome.replayed };
+    return {
+      package: serializePackage(outcome.package),
+      replayed: outcome.replayed,
+      duplicate: outcome.duplicate,
+    };
   }
 
   /**
-   * Run the create transaction, retrying on a lost package-number race. The
-   * per-AWB advisory lock serialises concurrent creates so numbering is
-   * deterministic; the retry is a safety net if a conflict still slips through
-   * (e.g. advisory-key hash collision) so we never surface a 500.
+   * Run the create transaction, retrying on a lost package-number race (only
+   * possible with `append`). The per-AWB advisory lock serialises concurrent
+   * creates, so the retry is a safety net for an advisory-key hash collision so
+   * we never surface a 500.
    */
   private async createWithRetry(
     awb: string,
@@ -96,10 +163,11 @@ export class PackagesService {
     idempotencyKey: string,
     user: AuthUser,
     cfg: Awaited<ReturnType<ConfigService['getEffectiveConfig']>>,
-  ): Promise<{ package: PackageRow; replayed: boolean }> {
+    numbering: NumberingStrategy,
+  ): Promise<TxResult> {
     for (let attempt = 1; ; attempt++) {
       try {
-        return await this.runCreateTransaction(awb, dto, idempotencyKey, user, cfg);
+        return await this.runCreateTransaction(awb, dto, idempotencyKey, user, cfg, numbering);
       } catch (err) {
         if (isPackageNumberConflict(err) && attempt < MAX_NUMBER_RETRIES) {
           continue; // another create took our number — recompute and retry
@@ -115,12 +183,14 @@ export class PackagesService {
     idempotencyKey: string,
     user: AuthUser,
     cfg: Awaited<ReturnType<ConfigService['getEffectiveConfig']>>,
-  ): Promise<{ package: PackageRow; replayed: boolean }> {
+    numbering: NumberingStrategy,
+  ): Promise<TxResult> {
     return this.prisma.$transaction(
       async (tx) => {
         // Serialise concurrent creates for the same AWB so package numbers are
         // assigned without racing (PRD §7, server is final). The lock releases
-        // at transaction end.
+        // at transaction end, so the renumber below is never run concurrently
+        // for the same shipment.
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${awb})::bigint)`;
 
         // 1. Idempotency: a resent create (same client UUID or Idempotency-Key)
@@ -133,7 +203,7 @@ export class PackagesService {
           include: PACKAGE_INCLUDE,
         });
         if (existing) {
-          return { package: existing, replayed: true };
+          return { package: existing, replayed: true, duplicate: false, renumbered: [] };
         }
 
         // 2. Find or create the shipment (created on the first package, §5).
@@ -158,19 +228,23 @@ export class PackagesService {
           });
         }
 
-        // 5. Server assigns the authoritative number (§7).
-        const existingPackages = await tx.package.findMany({
-          where: { shipmentId: shipment.id, deletedAt: null },
-          select: { packageNumber: true },
-        });
-        const packageNumber = nextPackageNumber(existingPackages);
+        // 5. Assign the number. `append` sets it now (max+1, stable);
+        //    `confirmed_at` inserts null and lets the renumber (step 7) assign
+        //    it in confirmed_at order.
+        let insertNumber: number | null = null;
+        if (numbering === 'append') {
+          const existingPackages = await tx.package.findMany({
+            where: { shipmentId: shipment.id, deletedAt: null },
+            select: { packageNumber: true },
+          });
+          insertNumber = nextPackageNumber(existingPackages);
+        }
 
-        // 6. Create the package, then its immutable v1 version, then link it.
         await tx.package.create({
           data: {
             id: dto.id,
             shipmentId: shipment.id,
-            packageNumber,
+            packageNumber: insertNumber,
             provisionalNumber: dto.provisionalNumber ?? null,
             status: 'active',
             stationId: dto.stationId ?? null,
@@ -221,8 +295,11 @@ export class PackagesService {
           data: { currentVersionId: version.id },
         });
 
-        // Manual weight (TL/Admin, validated above) raises the `manual_weight`
-        // flag so it surfaces on the dashboard and TL queue (PRD §9, §11).
+        // 6. Flags that this package may raise.
+        const flagsToAdd: string[] = [];
+
+        // Manual weight (TL/Admin, validated above) → `manual_weight` flag so it
+        // surfaces on the dashboard and TL queue (PRD §9, §11).
         if (dto.weightSource === 'manual') {
           await tx.flag.create({
             data: {
@@ -233,12 +310,37 @@ export class PackagesService {
               note: dto.weightReason ?? null,
             },
           });
-          if (!shipment.flags.includes('manual_weight')) {
-            await tx.shipment.update({
-              where: { id: shipment.id },
-              data: { flags: { set: [...shipment.flags, 'manual_weight'] } },
+          flagsToAdd.push('manual_weight');
+        }
+
+        // 7. Sync path only: renumber in confirmed_at order (PRD §10 rule 2) so
+        //    an earlier offline package that syncs late takes its rightful spot.
+        const renumbered =
+          numbering === 'confirmed_at' ? await renumberByConfirmedAt(tx, shipment.id) : [];
+
+        // 8. Possible duplicate: the shipment is now measured by two or more
+        //    devices (same AWB on two phones offline, PRD §10 rule 3). Keep
+        //    both; flag once for the Team Leader.
+        const duplicate = await this.isMultiDevice(tx, shipment.id);
+        if (duplicate && !shipment.flags.includes('possible_duplicate')) {
+          const alreadyOpen = await tx.flag.findFirst({
+            where: { shipmentId: shipment.id, type: 'possible_duplicate', status: 'open' },
+            select: { id: true },
+          });
+          if (!alreadyOpen) {
+            await tx.flag.create({
+              data: { shipmentId: shipment.id, type: 'possible_duplicate', status: 'open' },
             });
           }
+          flagsToAdd.push('possible_duplicate');
+        }
+
+        if (flagsToAdd.length > 0) {
+          const next = Array.from(new Set([...shipment.flags, ...flagsToAdd]));
+          await tx.shipment.update({
+            where: { id: shipment.id },
+            data: { flags: { set: next as never } },
+          });
         }
 
         await recomputeShipmentTotals(tx, shipment.id);
@@ -247,13 +349,23 @@ export class PackagesService {
           where: { id: dto.id },
           include: PACKAGE_INCLUDE,
         });
-        return { package: created, replayed: false };
+        return { package: created, replayed: false, duplicate, renumbered };
       },
       { timeout: 15_000 },
     );
   }
 
   // --- internals -----------------------------------------------------------
+
+  /** True when the shipment's active packages span two or more distinct devices. */
+  private async isMultiDevice(tx: Prisma.TransactionClient, shipmentId: string): Promise<boolean> {
+    const devices = await tx.package.findMany({
+      where: { shipmentId, status: 'active', deletedAt: null, deviceId: { not: null } },
+      select: { deviceId: true },
+      distinct: ['deviceId'],
+    });
+    return devices.length >= 2;
+  }
 
   private async findOrCreateShipment(tx: Prisma.TransactionClient, awb: string, branchId: string) {
     const found = await tx.shipment.findFirst({ where: { awb, deletedAt: null } });

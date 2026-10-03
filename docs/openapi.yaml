@@ -387,8 +387,9 @@ paths:
               properties:
                 packages:
                   type: array
+                  minItems: 1
                   maxItems: 50
-                  items: { $ref: '#/components/schemas/PackageCreate' }
+                  items: { $ref: '#/components/schemas/SyncPackage' }
       responses:
         '200':
           description: Per-item results (accepted / conflict / error)
@@ -1288,6 +1289,18 @@ components:
         confidence: { $ref: '#/components/schemas/Confidence' }
         confidenceDetail: { type: object, additionalProperties: true, nullable: true }
         confirmedAt: { type: string, format: date-time }
+    SyncPackage:
+      description: >
+        A package in a sync batch: the same shape as PackageCreate, but each item
+        carries its own AWB since a batch spans many shipments. The client UUID
+        (id) doubles as the per-item idempotency key, so a replayed batch creates
+        no duplicates.
+      allOf:
+        - $ref: '#/components/schemas/PackageCreate'
+        - type: object
+          required: [awb]
+          properties:
+            awb: { type: string, example: AY20435032852 }
     CorrectionCreate:
       type: object
       required: [reason]
