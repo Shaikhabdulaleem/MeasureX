@@ -132,22 +132,27 @@ class ApiClient {
 
   /// Effective configuration (divisor, step, AWB regex, dimension limits).
   Future<EffectiveConfig> getConfig(String token) async {
-    final res = await _client.get(_uri('/devices/me/config'), headers: _authHeaders(token));
+    final res = await _client.get(_uri('/devices/me/config'),
+        headers: _authHeaders(token));
     if (res.statusCode != 200) throw _error(res);
-    return EffectiveConfig.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+    return EffectiveConfig.fromJson(
+        jsonDecode(res.body) as Map<String, dynamic>);
   }
 
   /// Cross-device history check for an AWB.
   Future<AwbLookupResult> lookupAwb(String token, String awb) async {
-    final res = await _client.get(_uri('/awb/$awb/lookup'), headers: _authHeaders(token));
+    final res = await _client.get(_uri('/awb/$awb/lookup'),
+        headers: _authHeaders(token));
     if (res.statusCode != 200) throw _error(res);
-    return AwbLookupResult.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+    return AwbLookupResult.fromJson(
+        jsonDecode(res.body) as Map<String, dynamic>);
   }
 
   /// Approved scales (the model list a station binds to). The server returns
   /// only approved scales unless an admin passes all=true (PRD §9).
   Future<List<ScaleModel>> listScales(String token) async {
-    final res = await _client.get(_uri('/scales'), headers: _authHeaders(token));
+    final res =
+        await _client.get(_uri('/scales'), headers: _authHeaders(token));
     if (res.statusCode != 200) throw _error(res);
     return (jsonDecode(res.body) as List<dynamic>)
         .map((e) => ScaleModel.fromJson(e as Map<String, dynamic>))
@@ -215,30 +220,35 @@ class ApiClient {
       }),
     );
     if (res.statusCode != 201) throw _error(res);
-    return PhotoUploadTarget.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+    return PhotoUploadTarget.fromJson(
+        jsonDecode(res.body) as Map<String, dynamic>);
   }
 
   /// Fresh signed upload URL for an EXISTING photo (retry path, PRD §10). Used
   /// when a package's data is already on the server but the photo upload failed;
   /// no new photo row is created.
-  Future<PhotoUploadTarget> refreshPhotoUpload(String token, String photoId) async {
+  Future<PhotoUploadTarget> refreshPhotoUpload(
+      String token, String photoId) async {
     final res = await _client.post(
       _uri('/photos/$photoId/upload-url'),
       headers: _authHeaders(token),
     );
     if (res.statusCode != 200) throw _error(res);
-    return PhotoUploadTarget.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+    return PhotoUploadTarget.fromJson(
+        jsonDecode(res.body) as Map<String, dynamic>);
   }
 
   /// Upload the JPEG bytes directly to the signed URL (bypasses the API).
-  Future<void> uploadPhotoBytes(PhotoUploadTarget target, List<int> bytes) async {
+  Future<void> uploadPhotoBytes(
+      PhotoUploadTarget target, List<int> bytes) async {
     final res = await _client.put(
       Uri.parse(target.uploadUrl),
       headers: target.headers,
       body: bytes,
     );
     if (res.statusCode != 200 && res.statusCode != 204) {
-      throw ApiException(res.statusCode, 'UPLOAD_FAILED', 'Photo upload failed');
+      throw ApiException(
+          res.statusCode, 'UPLOAD_FAILED', 'Photo upload failed');
     }
   }
 
@@ -262,7 +272,8 @@ class ApiClient {
   }
 
   /// Upload telemetry events (append-only, replay-safe). Accepts 202.
-  Future<void> postEvents(String token, List<Map<String, dynamic>> events) async {
+  Future<void> postEvents(
+      String token, List<Map<String, dynamic>> events) async {
     final res = await _client.post(
       _uri('/events/batch'),
       headers: _authHeaders(token),
@@ -272,15 +283,18 @@ class ApiClient {
   }
 
   Future<ShipmentModel> completeShipment(String token, String awb) async {
-    final res = await _client.post(_uri('/shipments/$awb/complete'), headers: _authHeaders(token));
+    final res = await _client.post(_uri('/shipments/$awb/complete'),
+        headers: _authHeaders(token));
     if (res.statusCode != 200) throw _error(res);
     return ShipmentModel.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
   }
 
   Future<ShipmentDetail> getShipment(String token, String awb) async {
-    final res = await _client.get(_uri('/shipments/$awb'), headers: _authHeaders(token));
+    final res = await _client.get(_uri('/shipments/$awb'),
+        headers: _authHeaders(token));
     if (res.statusCode != 200) throw _error(res);
-    return ShipmentDetail.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+    return ShipmentDetail.fromJson(
+        jsonDecode(res.body) as Map<String, dynamic>);
   }
 
   /// Own measurements (optionally since a date). Server scopes to the caller.
@@ -306,11 +320,13 @@ class ApiClient {
   }
 
   /// Labour "Flag for Team Leader" on a completed shipment.
-  Future<void> flagShipment(String token, String shipmentId, {String? note}) async {
+  Future<void> flagShipment(String token, String shipmentId,
+      {String? note}) async {
     final res = await _client.post(
       _uri('/flags'),
       headers: _authHeaders(token),
-      body: jsonEncode({'shipmentId': shipmentId, if (note != null) 'note': note}),
+      body: jsonEncode(
+          {'shipmentId': shipmentId, if (note != null) 'note': note}),
     );
     if (res.statusCode != 201) throw _error(res);
   }
@@ -334,6 +350,122 @@ class ApiClient {
       }),
     );
     if (res.statusCode != 201) throw _error(res);
+  }
+
+  // --- M4: Team Leader tools -----------------------------------------------
+
+  /// Correct a package: appends a new measurement version (reason required).
+  /// Team Leader / Admin only; the server recomputes billing and totals.
+  Future<PackageModel> correctPackage(
+    String token,
+    String packageId, {
+    required int lengthMm,
+    required int widthMm,
+    required int heightMm,
+    required String reason,
+    int? actualWeightG,
+    String? weightSource,
+    String? weightReason,
+  }) async {
+    final res = await _client.post(
+      _uri('/packages/$packageId/corrections'),
+      headers: _authHeaders(token),
+      body: jsonEncode({
+        'lengthMm': lengthMm,
+        'widthMm': widthMm,
+        'heightMm': heightMm,
+        'reason': reason,
+        if (actualWeightG != null) 'actualWeightG': actualWeightG,
+        if (weightSource != null) 'weightSource': weightSource,
+        if (weightReason != null) 'weightReason': weightReason,
+      }),
+    );
+    if (res.statusCode != 201 && res.statusCode != 200) throw _error(res);
+    return PackageModel.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+  }
+
+  /// Full version history of a package, newest first (original vs corrected).
+  Future<List<MeasurementVersionModel>> getPackageVersions(
+    String token,
+    String packageId,
+  ) async {
+    final res = await _client.get(
+      _uri('/packages/$packageId/versions'),
+      headers: _authHeaders(token),
+    );
+    if (res.statusCode != 200) throw _error(res);
+    final body = jsonDecode(res.body) as Map<String, dynamic>;
+    return (body['items'] as List<dynamic>)
+        .map((e) => MeasurementVersionModel.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Reopen a completed shipment (reason required). Team Leader / Admin.
+  Future<ShipmentModel> reopenShipment(
+      String token, String awb, String reason) async {
+    final res = await _client.post(
+      _uri('/shipments/$awb/reopen'),
+      headers: _authHeaders(token),
+      body: jsonEncode({'reason': reason}),
+    );
+    if (res.statusCode != 200) throw _error(res);
+    return ShipmentModel.fromJson(jsonDecode(res.body) as Map<String, dynamic>);
+  }
+
+  /// The review queue: flags in the caller's branch scope (PRD §11).
+  Future<List<FlagModel>> listFlags(String token,
+      {String status = 'open'}) async {
+    final params = <String, String>{if (status.isNotEmpty) 'status': status};
+    final res = await _client.get(
+      _uri('/flags').replace(queryParameters: params),
+      headers: _authHeaders(token),
+    );
+    if (res.statusCode != 200) throw _error(res);
+    final body = jsonDecode(res.body) as Map<String, dynamic>;
+    return (body['items'] as List<dynamic>)
+        .map((e) => FlagModel.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Approve or dismiss a flag (Team Leader / Admin).
+  Future<void> resolveFlag(
+    String token,
+    String flagId,
+    String action, {
+    String? note,
+  }) async {
+    final res = await _client.post(
+      _uri('/flags/$flagId/resolve'),
+      headers: _authHeaders(token),
+      body: jsonEncode({'action': action, if (note != null) 'note': note}),
+    );
+    if (res.statusCode != 200) throw _error(res);
+  }
+
+  /// Open (or filtered) remeasurement requests in scope (PRD §11).
+  Future<List<RemeasureRequestModel>> listRemeasurements(
+    String token, {
+    String status = 'open',
+  }) async {
+    final params = <String, String>{if (status.isNotEmpty) 'status': status};
+    final res = await _client.get(
+      _uri('/remeasurements').replace(queryParameters: params),
+      headers: _authHeaders(token),
+    );
+    if (res.statusCode != 200) throw _error(res);
+    final body = jsonDecode(res.body) as Map<String, dynamic>;
+    return (body['items'] as List<dynamic>)
+        .map((e) => RemeasureRequestModel.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
+  /// Cancel an open remeasurement request → shipment back to completed.
+  Future<void> cancelRemeasure(String token, String requestId) async {
+    final res = await _client.post(
+      _uri('/remeasurements/$requestId/cancel'),
+      headers: _authHeaders(token),
+    );
+    if (res.statusCode != 200) throw _error(res);
   }
 
   ApiException _error(http.Response res) {
@@ -369,7 +501,8 @@ class EffectiveConfig {
   final int minDimensionCm;
   final int maxDimensionCm;
 
-  factory EffectiveConfig.fromJson(Map<String, dynamic> json) => EffectiveConfig(
+  factory EffectiveConfig.fromJson(Map<String, dynamic> json) =>
+      EffectiveConfig(
         awbRegex: json['awbRegex'] as String? ?? r'^AY\d{11}$',
         volumetricDivisor: (json['volumetricDivisor'] as num?)?.toInt() ?? 5000,
         chargeableStepKg: (json['chargeableStepKg'] as num?)?.toDouble() ?? 0.5,
@@ -471,7 +604,8 @@ class ScaleModel {
         approved: json['approved'] as bool? ?? false,
         streaming: json['streaming'] as bool? ?? true,
         stabilityWindow: (json['stabilityWindow'] as num?)?.toInt() ?? 5,
-        stabilityToleranceG: (json['stabilityToleranceG'] as num?)?.toInt() ?? 20,
+        stabilityToleranceG:
+            (json['stabilityToleranceG'] as num?)?.toInt() ?? 20,
         stabilityWindowMs: (json['stabilityWindowMs'] as num?)?.toInt() ?? 1500,
         minWeightG: (json['minWeightG'] as num?)?.toInt() ?? 50,
         staleAfterMs: (json['staleAfterMs'] as num?)?.toInt() ?? 5000,
@@ -597,7 +731,8 @@ class AwbLookupResult {
   final int nextPackageNumber;
   final ShipmentDetail? shipment;
 
-  factory AwbLookupResult.fromJson(Map<String, dynamic> json) => AwbLookupResult(
+  factory AwbLookupResult.fromJson(Map<String, dynamic> json) =>
+      AwbLookupResult(
         awb: json['awb'] as String,
         found: json['found'] as bool? ?? false,
         nextPackageNumber: (json['nextPackageNumber'] as num?)?.toInt() ?? 1,
@@ -650,11 +785,85 @@ class PhotoUploadTarget {
   final String method;
   final Map<String, String> headers;
 
-  factory PhotoUploadTarget.fromJson(Map<String, dynamic> json) => PhotoUploadTarget(
+  factory PhotoUploadTarget.fromJson(Map<String, dynamic> json) =>
+      PhotoUploadTarget(
         photoId: json['photoId'] as String,
         uploadUrl: json['uploadUrl'] as String,
         method: json['method'] as String? ?? 'PUT',
         headers: ((json['headers'] as Map<String, dynamic>?) ?? {})
             .map((k, v) => MapEntry(k, v.toString())),
+      );
+}
+
+// --- M4 models -------------------------------------------------------------
+
+/// A flag in the Team-Leader review queue (PRD §11).
+class FlagModel {
+  FlagModel({
+    required this.id,
+    required this.type,
+    required this.status,
+    this.shipmentId,
+    this.packageId,
+    this.note,
+    this.createdAt,
+    this.awb,
+  });
+
+  final String id;
+  final String type;
+  final String status;
+  final String? shipmentId;
+  final String? packageId;
+  final String? note;
+  final String? createdAt;
+  final String? awb;
+
+  factory FlagModel.fromJson(Map<String, dynamic> json) => FlagModel(
+        id: json['id'] as String,
+        type: json['type'] as String,
+        status: json['status'] as String,
+        shipmentId: json['shipmentId'] as String?,
+        packageId: json['packageId'] as String?,
+        note: json['note'] as String?,
+        createdAt: json['createdAt'] as String?,
+        awb: json['awb'] as String?,
+      );
+}
+
+/// A remeasurement request (PRD §8, §11).
+class RemeasureRequestModel {
+  RemeasureRequestModel({
+    required this.id,
+    required this.shipmentId,
+    required this.reason,
+    required this.status,
+    required this.packageIds,
+    this.note,
+    this.createdAt,
+    this.awb,
+  });
+
+  final String id;
+  final String shipmentId;
+  final String reason;
+  final String status;
+  final List<String> packageIds;
+  final String? note;
+  final String? createdAt;
+  final String? awb;
+
+  factory RemeasureRequestModel.fromJson(Map<String, dynamic> json) =>
+      RemeasureRequestModel(
+        id: json['id'] as String,
+        shipmentId: json['shipmentId'] as String,
+        reason: json['reason'] as String,
+        status: json['status'] as String,
+        packageIds: ((json['packageIds'] as List<dynamic>?) ?? [])
+            .map((e) => e as String)
+            .toList(),
+        note: json['note'] as String?,
+        createdAt: json['createdAt'] as String?,
+        awb: json['awb'] as String?,
       );
 }

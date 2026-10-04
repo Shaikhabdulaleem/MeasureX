@@ -6,6 +6,7 @@ import '../capture/scanner_screen.dart';
 import '../history/history_screen.dart';
 import '../scale/scale_settings_screen.dart';
 import '../scale/scale_ui.dart';
+import '../team_leader/tl_tools_screen.dart';
 import '../sync/offline_banner.dart';
 import '../sync/sync_providers.dart';
 import '../sync/sync_queue_screen.dart';
@@ -19,7 +20,8 @@ class HomeScreen extends ConsumerWidget {
     final user = ref.watch(authControllerProvider).user;
     // Start the sync engine's periodic pump for the lifetime of the session.
     ref.watch(syncEngineProvider);
-    final status = ref.watch(syncStatusProvider).valueOrNull ?? SyncStatus.empty;
+    final status =
+        ref.watch(syncStatusProvider).valueOrNull ?? SyncStatus.empty;
 
     return Scaffold(
       appBar: AppBar(
@@ -91,15 +93,30 @@ class HomeScreen extends ConsumerWidget {
                       height: 96,
                       child: FilledButton.icon(
                         onPressed: () => Navigator.of(context).push(
-                          MaterialPageRoute(builder: (_) => const ScannerScreen()),
+                          MaterialPageRoute(
+                              builder: (_) => const ScannerScreen()),
                         ),
                         icon: const Icon(Icons.qr_code_scanner, size: 32),
                         label: Text(
                           t.scanShipment,
-                          style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold),
+                          style: const TextStyle(
+                              fontSize: 22, fontWeight: FontWeight.bold),
                         ),
                       ),
                     ),
+                    if (user != null &&
+                        (user.role == 'team_leader' ||
+                            user.role == 'admin')) ...[
+                      const SizedBox(height: 12),
+                      OutlinedButton.icon(
+                        onPressed: () => Navigator.of(context).push(
+                          MaterialPageRoute(
+                              builder: (_) => const TlToolsScreen()),
+                        ),
+                        icon: const Icon(Icons.supervisor_account),
+                        label: Text(t.teamLeaderTools),
+                      ),
+                    ],
                     const Spacer(),
                   ],
                 ),
@@ -144,12 +161,15 @@ class HomeScreen extends ConsumerWidget {
           false;
     }
     if (!proceed) return;
-    await ref.read(authControllerProvider.notifier).logout(wipeLocal: !hasUnsynced);
+    await ref
+        .read(authControllerProvider.notifier)
+        .logout(wipeLocal: !hasUnsynced);
   }
 }
 
 class _StatusChip extends StatelessWidget {
-  const _StatusChip({required this.icon, required this.label, required this.value});
+  const _StatusChip(
+      {required this.icon, required this.label, required this.value});
 
   final IconData icon;
   final String label;
