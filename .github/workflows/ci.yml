@@ -97,3 +97,34 @@ jobs:
 
       - name: Test
         run: flutter test
+
+  measure-core:
+    name: Build & test (C++ vision core)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # conda-forge OpenCV (>= 4.9) ships the ArUco API in the `objdetect`
+      # module, matching the OpenCV Android SDK the app links against. This is a
+      # fast binary install (no building OpenCV from source) and bundles a C++
+      # compiler + cmake + ninja for a hermetic host build.
+      - uses: mamba-org/setup-micromamba@v2
+        with:
+          environment-name: measurex
+          create-args: >-
+            opencv>=4.9
+            cmake
+            ninja
+            cxx-compiler
+
+      - name: Configure, build and test
+        shell: bash -el {0}
+        run: |
+          cmake -S packages/measure-core -B build -G Ninja \
+            -DMEASUREX_BUILD_TESTS=ON -DMEASUREX_BUILD_TOOLS=ON \
+            -DCMAKE_PREFIX_PATH="$CONDA_PREFIX"
+          cmake --build build
+          ctest --test-dir build --output-on-failure
+          # Smoke-test the mat generator produces a PNG.
+          ./build/measurex_matgen /tmp/mat.png CI-STATION 1200 200
+          test -s /tmp/mat.png
