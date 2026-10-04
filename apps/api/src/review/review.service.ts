@@ -343,5 +343,6 @@ function serializeRemeasure(r: RemeasureRequest) {
     requestedBy: r.requestedBy,
     doneBy: r.doneBy,
     closedAt: r.closedAt?.toISOString() ?? null,
+    createdAt: r.createdAt.toISOString(),
   };
 }

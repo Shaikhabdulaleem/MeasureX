@@ -135,6 +135,32 @@ export class PackageActionsService {
     return serializePackage(result);
   }
 
+  /**
+   * GET /packages/{id}/versions — the full version history of a package, newest
+   * first (PRD §11: original vs corrected side by side). Branch-scoped; readable
+   * by a Team Leader / Admin in scope or the worker who measured it.
+   */
+  async listVersions(packageId: string, user: AuthUser) {
+    const pkg = await this.prisma.package.findFirst({
+      where: { id: packageId, deletedAt: null },
+      include: { shipment: { select: { branchId: true } } },
+    });
+    const inScope =
+      pkg != null && (canAccessBranch(user, pkg.shipment.branchId) || pkg.measuredBy === user.sub);
+    if (!pkg || !inScope) {
+      throw new NotFoundException({ code: 'NOT_FOUND', message: 'Package not found' });
+    }
+    const versions = await this.prisma.measurementVersion.findMany({
+      where: { packageId, deletedAt: null },
+      orderBy: { versionNo: 'desc' },
+    });
+    return {
+      packageId,
+      currentVersionId: pkg.currentVersionId,
+      items: versions.map(serializeVersion),
+    };
+  }
+
   /** POST /packages/{id}/void — exclude from totals, keep the number (reason required). */
   async void(packageId: string, dto: PackageVoidDto, user: AuthUser, ip?: string) {
     const pkg = await this.loadActivePackage(packageId, user);

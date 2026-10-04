@@ -1,6 +1,7 @@
 import {
   Body,
   Controller,
+  Get,
   HttpCode,
   HttpStatus,
   Param,
@@ -19,6 +20,12 @@ import { CurrentUser, AuthUser } from '../auth/decorators/current-user.decorator
 @Controller('packages')
 export class PackageActionsController {
   constructor(private readonly actions: PackageActionsService) {}
+
+  /** GET /packages/{id}/versions — full version history (newest first). */
+  @Get(':id/versions')
+  listVersions(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: AuthUser) {
+    return this.actions.listVersions(id, user);
+  }
 
   /** POST /packages/{id}/corrections — append a corrected version (reason required). */
   @Post(':id/corrections')

@@ -274,6 +274,29 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/Error' }
 
+  /packages/{id}/versions:
+    get:
+      tags: [Packages]
+      summary: Version history of a package (newest first)
+      description: >
+        Branch-scoped; readable by a Team Leader / Admin in scope or the worker
+        who measured it. Used to show original vs corrected side by side (§11).
+      parameters: [{ $ref: '#/components/parameters/IdPath' }]
+      responses:
+        '200':
+          description: Version history
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  packageId: { type: string, format: uuid }
+                  currentVersionId: { type: string, format: uuid, nullable: true }
+                  items:
+                    type: array
+                    items: { $ref: '#/components/schemas/MeasurementVersion' }
+        '404': { $ref: '#/components/responses/NotFound' }
+
   /packages/{id}/corrections:
     post:
       tags: [Packages]
