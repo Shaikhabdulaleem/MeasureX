@@ -123,6 +123,27 @@ describe('Corrections (PRD §8, §11)', () => {
     expect(await auditCount(pkgId, 'package_corrected')).toBe(1);
   });
 
+  it('exposes version history (newest first) with the current version marked', async () => {
+    const created = await createPackage(labour, randomAwb(), packageBody(), randomUUID()).expect(
+      201,
+    );
+    const pkgId = created.body.id;
+    await request(server)
+      .post(`/api/v1/packages/${pkgId}/corrections`)
+      .set(`Authorization`, `Bearer ${tl.accessToken}`)
+      .send({ lengthMm: 480, widthMm: 320, heightMm: 220, reason: 'tweak' })
+      .expect(201);
+
+    const res = await request(server)
+      .get(`/api/v1/packages/${pkgId}/versions`)
+      .set('Authorization', `Bearer ${tl.accessToken}`)
+      .expect(200);
+    expect(res.body.items).toHaveLength(2);
+    expect(res.body.items[0].versionNo).toBe(2); // newest first
+    expect(res.body.items[1].versionNo).toBe(1);
+    expect(res.body.currentVersionId).toBe(res.body.items[0].id);
+  });
+
   it('requires a reason (400)', async () => {
     const created = await createPackage(labour, randomAwb(), packageBody(), randomUUID()).expect(
       201,
