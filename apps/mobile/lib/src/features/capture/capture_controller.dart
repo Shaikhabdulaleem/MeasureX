@@ -121,6 +121,8 @@ class CaptureController extends StateNotifier<CaptureState> {
     int? actualWeightG,
     String? scaleId,
     String? weightReason,
+    String method = 'manual',
+    String? confidence,
     String contentType = 'image/jpeg',
   }) async {
     final awb = state.awb;
@@ -149,6 +151,8 @@ class CaptureController extends StateNotifier<CaptureState> {
         heightMm: heightMm,
         idempotencyKey: idempotencyKey,
         confirmedAt: DateTime.now().toUtc(),
+        method: Value(method),
+        confidence: Value(confidence),
         weightSource: Value(weightSource),
         weightReason: Value(weightReason),
         actualWeightG: Value(actualWeightG),

@@ -129,5 +129,18 @@
   "shipmentReopened": "تم إعادة فتح الشحنة",
   "actionFailed": "فشل الإجراء. حاول مرة أخرى.",
   "version": "الإصدار",
-  "current": "الحالي"
+  "current": "الحالي",
+  "measureWithCamera": "القياس بالكاميرا (تجريبي)",
+  "measureWithCameraHint": "وجّه الكاميرا نحو سجادة العلامات للقياس تلقائياً",
+  "enterManually": "إدخال يدوي",
+  "enterManuallyHint": "اكتب الطول والعرض والارتفاع",
+  "measureEngineUnavailable": "محرك القياس بالكاميرا غير متوفر في هذا الإصدار.",
+  "markersDetected": "العلامات",
+  "showMoreMarkers": "أظهر المزيد من السجادة (علامتان على الأقل)",
+  "placeBoxOnMat": "ضع الصندوق داخل السجادة",
+  "useMeasurement": "استخدم هذا القياس",
+  "confidenceHigh": "عالية",
+  "confidenceMedium": "متوسطة",
+  "confidenceLow": "منخفضة",
+  "heightEnteredManually": "يُدخَل الارتفاع يدوياً في الخطوة التالية"
 }

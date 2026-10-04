@@ -129,5 +129,18 @@
   "shipmentReopened": "চালান পুনরায় খোলা হয়েছে",
   "actionFailed": "ক্রিয়াটি ব্যর্থ হয়েছে। আবার চেষ্টা করুন।",
   "version": "সংস্করণ",
-  "current": "বর্তমান"
+  "current": "বর্তমান",
+  "measureWithCamera": "ক্যামেরা দিয়ে পরিমাপ (বেটা)",
+  "measureWithCameraHint": "স্বয়ংক্রিয় পরিমাপের জন্য মার্কার ম্যাটের দিকে তাক করুন",
+  "enterManually": "ম্যানুয়ালি লিখুন",
+  "enterManuallyHint": "দৈর্ঘ্য, প্রস্থ ও উচ্চতা লিখুন",
+  "measureEngineUnavailable": "এই বিল্ডে ক্যামেরা পরিমাপ ইঞ্জিন উপলব্ধ নয়।",
+  "markersDetected": "মার্কার",
+  "showMoreMarkers": "ম্যাটের আরও অংশ দেখান (অন্তত ২টি মার্কার)",
+  "placeBoxOnMat": "ম্যাটের ভিতরে বাক্সটি রাখুন",
+  "useMeasurement": "এই পরিমাপ ব্যবহার করুন",
+  "confidenceHigh": "উচ্চ",
+  "confidenceMedium": "মাঝারি",
+  "confidenceLow": "নিম্ন",
+  "heightEnteredManually": "পরবর্তী ধাপে উচ্চতা ম্যানুয়ালি লেখা হবে"
 }

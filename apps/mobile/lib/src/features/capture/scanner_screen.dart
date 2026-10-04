@@ -9,7 +9,7 @@ import '../../core/connectivity.dart';
 import '../sync/offline_banner.dart';
 import '../sync/sync_providers.dart';
 import 'capture_controller.dart';
-import 'manual_dimensions_screen.dart';
+import '../measure/capture_method_screen.dart';
 import 'previous_result_sheet.dart';
 
 /// AWB scanner (Code128 + QR). Accepts only values matching the configured AWB
@@ -43,7 +43,8 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
     }
   }
 
-  String _normalise(String raw) => raw.replaceAll(RegExp(r'\s+'), '').toUpperCase();
+  String _normalise(String raw) =>
+      raw.replaceAll(RegExp(r'\s+'), '').toUpperCase();
 
   Future<void> _onDetect(BarcodeCapture capture) async {
     if (_handling) return;
@@ -77,7 +78,8 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
     }
 
     try {
-      final result = await ref.read(captureControllerProvider.notifier).lookup(awb);
+      final result =
+          await ref.read(captureControllerProvider.notifier).lookup(awb);
       if (!mounted) return;
 
       if (result.found && result.shipment?.status == 'completed') {
@@ -93,7 +95,7 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
           );
       if (!mounted) return;
       await Navigator.of(context).push(
-        MaterialPageRoute(builder: (_) => const ManualDimensionsScreen()),
+        MaterialPageRoute(builder: (_) => const CaptureMethodScreen()),
       );
       await _resume();
     } on ApiException catch (e) {
@@ -120,7 +122,7 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
       const SnackBar(content: Text(kOfflineCannotVerify)),
     );
     await Navigator.of(context).push(
-      MaterialPageRoute(builder: (_) => const ManualDimensionsScreen()),
+      MaterialPageRoute(builder: (_) => const CaptureMethodScreen()),
     );
     await _resume();
   }
@@ -132,7 +134,8 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
 
   void _showError(String message) {
     if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _enterManually() async {
@@ -150,7 +153,8 @@ class _ScannerScreenState extends ConsumerState<ScannerScreen> {
               controller: controller,
               autofocus: true,
               textCapitalization: TextCapitalization.characters,
-              decoration: InputDecoration(labelText: l10n.awb, errorText: error),
+              decoration:
+                  InputDecoration(labelText: l10n.awb, errorText: error),
               onSubmitted: (_) => Navigator.of(ctx).pop(controller.text),
             ),
             actions: [

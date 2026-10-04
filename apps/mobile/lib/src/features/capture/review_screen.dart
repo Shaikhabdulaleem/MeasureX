@@ -23,6 +23,8 @@ class ReviewScreen extends ConsumerStatefulWidget {
     required this.widthMm,
     required this.heightMm,
     required this.photoBytes,
+    this.method = 'manual',
+    this.confidence,
   });
 
   final int lengthMm;
@@ -30,13 +32,23 @@ class ReviewScreen extends ConsumerStatefulWidget {
   final int heightMm;
   final Uint8List photoBytes;
 
+  /// Capture method (`manual` or `marker`) and, for a marker measurement, its
+  /// confidence — carried into the saved version (PRD §4).
+  final String method;
+  final String? confidence;
+
   @override
   ConsumerState<ReviewScreen> createState() => _ReviewScreenState();
 }
 
 /// The weight the user will save, with its provenance.
 class _ChosenWeight {
-  const _ChosenWeight({required this.grams, required this.source, this.scaleId, this.reason, this.label});
+  const _ChosenWeight(
+      {required this.grams,
+      required this.source,
+      this.scaleId,
+      this.reason,
+      this.label});
   final int grams;
   final String source; // 'scale' | 'manual'
   final String? scaleId;
@@ -68,16 +80,19 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
     final l10n = AppLocalizations.of(context);
     setState(() => _saving = true);
     try {
-      final pkg = await ref.read(captureControllerProvider.notifier).savePackage(
-            lengthMm: widget.lengthMm,
-            widthMm: widget.widthMm,
-            heightMm: widget.heightMm,
-            photoBytes: widget.photoBytes,
-            weightSource: weight?.source ?? 'none',
-            actualWeightG: weight?.grams,
-            scaleId: weight?.scaleId,
-            weightReason: weight?.reason,
-          );
+      final pkg =
+          await ref.read(captureControllerProvider.notifier).savePackage(
+                lengthMm: widget.lengthMm,
+                widthMm: widget.widthMm,
+                heightMm: widget.heightMm,
+                photoBytes: widget.photoBytes,
+                weightSource: weight?.source ?? 'none',
+                actualWeightG: weight?.grams,
+                scaleId: weight?.scaleId,
+                weightReason: weight?.reason,
+                method: widget.method,
+                confidence: widget.confidence,
+              );
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
@@ -90,7 +105,8 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
     } catch (_) {
       if (!mounted) return;
       setState(() => _saving = false);
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(l10n.genericError)));
+      ScaffoldMessenger.of(context)
+          .showSnackBar(SnackBar(content: Text(l10n.genericError)));
     }
   }
 
@@ -132,7 +148,8 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
           children: [
             ClipRRect(
               borderRadius: BorderRadius.circular(12),
-              child: Image.memory(widget.photoBytes, height: 200, fit: BoxFit.cover),
+              child: Image.memory(widget.photoBytes,
+                  height: 200, fit: BoxFit.cover),
             ),
             const SizedBox(height: 12),
             // Live scale status — weight is captured automatically when stable.
@@ -152,12 +169,15 @@ class _ReviewScreenState extends ConsumerState<ReviewScreen> {
                   ),
                   kvRow(l10n.cbm, cbmStr(preview.cbm)),
                   kvRow(l10n.volumetric, kg(preview.volumetricG)),
-                  kvRow(l10n.chargeable, kgStep(preview.chargeableG), emphasise: true),
+                  kvRow(l10n.chargeable, kgStep(preview.chargeableG),
+                      emphasise: true),
                   const Divider(height: 24),
                   kvRow(l10n.method, l10n.manual),
                   kvRow(
                     l10n.weight,
-                    weight == null ? '—' : '${kg(weight.grams)}  (${weight.label ?? _sourceText(l10n, weight.source)})',
+                    weight == null
+                        ? '—'
+                        : '${kg(weight.grams)}  (${weight.label ?? _sourceText(l10n, weight.source)})',
                   ),
                 ],
               ),
@@ -239,11 +259,15 @@ class _ManualWeightDialogState extends State<_ManualWeightDialog> {
           children: [
             TextFormField(
               controller: _weight,
-              keyboardType: const TextInputType.numberWithOptions(decimal: true),
-              inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]'))],
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              inputFormatters: [
+                FilteringTextInputFormatter.allow(RegExp(r'[0-9.,]'))
+              ],
               decoration: InputDecoration(labelText: l10n.weightKg),
               validator: (v) {
-                final parsed = double.tryParse((v ?? '').trim().replaceAll(',', '.'));
+                final parsed =
+                    double.tryParse((v ?? '').trim().replaceAll(',', '.'));
                 if (parsed == null || parsed <= 0) return l10n.weightKg;
                 return null;
               },
@@ -252,13 +276,16 @@ class _ManualWeightDialogState extends State<_ManualWeightDialog> {
             TextFormField(
               controller: _reason,
               decoration: InputDecoration(labelText: l10n.manualWeightReason),
-              validator: (v) => (v == null || v.trim().isEmpty) ? l10n.reasonRequired : null,
+              validator: (v) =>
+                  (v == null || v.trim().isEmpty) ? l10n.reasonRequired : null,
             ),
           ],
         ),
       ),
       actions: [
-        TextButton(onPressed: () => Navigator.of(context).pop(), child: Text(l10n.cancel)),
+        TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: Text(l10n.cancel)),
         FilledButton(onPressed: _submit, child: Text(l10n.save)),
       ],
     );
