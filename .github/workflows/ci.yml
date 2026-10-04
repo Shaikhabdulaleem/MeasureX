@@ -111,8 +111,11 @@ jobs:
       - uses: mamba-org/setup-micromamba@v2
         with:
           environment-name: measurex
+          # Pin to OpenCV 4.x to match the OpenCV Android SDK the app links
+          # against (4.x) and its stable imgproc/objdetect API. (5.0 reorganised
+          # several imgproc symbols.)
           create-args: >-
-            opencv>=4.9
+            opencv>=4.9,<5
             cmake
             ninja
             cxx-compiler
