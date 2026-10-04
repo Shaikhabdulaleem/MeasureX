@@ -71,8 +71,9 @@ class _ManualDimensionsScreenState
     final text = value?.trim() ?? '';
     final parsed = double.tryParse(text);
     if (parsed == null) return '${l10n.eachSide} $_minCm–$_maxCm cm';
-    if (parsed < _minCm || parsed > _maxCm)
+    if (parsed < _minCm || parsed > _maxCm) {
       return '${l10n.eachSide} $_minCm–$_maxCm cm';
+    }
     return null;
   }
 
