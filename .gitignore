@@ -65,3 +65,6 @@ apps/mobile/macos/
 apps/mobile/windows/
 apps/mobile/web/
 apps/mobile/.metadata
+
+# Phase B — OpenCV Android SDK (large, downloaded locally; see docs/phase-b-android-build.md)
+third_party/
