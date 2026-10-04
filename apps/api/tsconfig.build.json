@@ -5,5 +5,6 @@
     "outDir": "dist"
   },
   "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist", "test", "prisma", "**/*.spec.ts", "**/*.e2e-spec.ts"]
+  "comment": "Do NOT exclude \"prisma\" here: the pattern also matches src/prisma (the PrismaModule), which must be compiled. The root-level prisma/ dir (migrations, seed) is already outside the src include.",
+  "exclude": ["node_modules", "dist", "test", "**/*.spec.ts", "**/*.e2e-spec.ts"]
 }
