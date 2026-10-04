@@ -39,6 +39,14 @@ function createPackage(auth: AuthContext, awb: string, body: Record<string, unkn
     .send(body);
 }
 
+/** Sync-batch upload (confirmed_at numbering → renumberByConfirmedAt path). */
+function syncBatch(auth: AuthContext, packages: Array<Record<string, unknown>>) {
+  return request(server)
+    .post('/api/v1/sync/batch')
+    .set('Authorization', `Bearer ${auth.accessToken}`)
+    .send({ packages });
+}
+
 /** Create a completed shipment with `n` packages; returns awb + package rows. */
 async function completedShipment(n = 1) {
   const awb = randomAwb();
@@ -312,6 +320,73 @@ describe('Remeasurement loop (PRD §8)', () => {
       packageBody({ remeasureOfPackageId: pkgs[0].id }),
       randomUUID(),
     ).expect(409);
+  });
+
+  it('pins the remeasure replacement during a later renumber; late sync gets the next free number', async () => {
+    // PKG 01, 02, 03 (confirmed in order).
+    const awb = randomAwb();
+    const t0 = Date.now();
+    const pkgs = [];
+    for (let i = 0; i < 3; i++) {
+      const res = await createPackage(
+        labour,
+        awb,
+        packageBody({ confirmedAt: new Date(t0 + i * 1000).toISOString() }),
+        randomUUID(),
+      ).expect(201);
+      pkgs.push(res.body);
+    }
+    expect(pkgs.map((p) => p.packageNumber)).toEqual([1, 2, 3]);
+    await request(server)
+      .post(`/api/v1/shipments/${awb}/complete`)
+      .set(`Authorization`, `Bearer ${labour.accessToken}`)
+      .expect(200);
+
+    // Remeasure PKG 02 → old superseded, replacement active, SAME number 2.
+    const shipment = await prisma.shipment.findFirstOrThrow({ where: { awb } });
+    await request(server)
+      .post('/api/v1/remeasurements')
+      .set(`Authorization`, `Bearer ${tl.accessToken}`)
+      .send({ shipmentId: shipment.id, packageIds: [pkgs[1].id], reason: 'customer_dispute' })
+      .expect(201);
+    const replacement = await createPackage(
+      labour,
+      awb,
+      packageBody({ remeasureOfPackageId: pkgs[1].id }),
+      randomUUID(),
+    ).expect(201);
+    expect(replacement.body.packageNumber).toBe(2);
+
+    // Reopen so a late offline package can still land on this AWB.
+    await request(server)
+      .post(`/api/v1/shipments/${awb}/reopen`)
+      .set(`Authorization`, `Bearer ${tl.accessToken}`)
+      .send({ reason: 'late piece arrived' })
+      .expect(200);
+
+    // Sync a late offline package (confirmed last) → triggers a renumber.
+    const lateId = randomUUID();
+    const res = await syncBatch(labour, [
+      packageBody({ id: lateId, awb, confirmedAt: new Date(t0 + 10_000).toISOString() }),
+    ]).expect(200);
+    expect(res.body.results[0].status).toBe('synced');
+
+    // Replacement still PKG 02 (pinned); 01 and 03 unchanged; late package = 4.
+    const detail = await request(server)
+      .get(`/api/v1/shipments/${awb}`)
+      .set(`Authorization`, `Bearer ${tl.accessToken}`)
+      .expect(200);
+    const active: Array<{ id: string; packageNumber: number }> = detail.body.packages.filter(
+      (p: { status: string }) => p.status === 'active',
+    );
+    const byId = Object.fromEntries(active.map((p) => [p.id, p.packageNumber]));
+    expect(byId[replacement.body.id]).toBe(2);
+    expect(byId[pkgs[0].id]).toBe(1);
+    expect(byId[pkgs[2].id]).toBe(3);
+    expect(byId[lateId]).toBe(4);
+    // No duplicate active numbers (the unique index held).
+    const nums = active.map((p) => p.packageNumber).sort((a, b) => a - b);
+    expect(nums).toEqual([1, 2, 3, 4]);
   });
 
   it('cancelling an open request returns the shipment to completed', async () => {

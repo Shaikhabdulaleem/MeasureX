@@ -1,6 +1,7 @@
 import {
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -70,6 +71,11 @@ export class UsersService {
         message: 'Home branch is outside your admin scope',
       });
     }
+    // Privilege-escalation guard: a scoped admin may only grant an admin scope
+    // that is a subset of their own; only an "all" admin may grant "all".
+    if (dto.role === Role.admin) {
+      this.assertCanGrantScope(actor, dto.adminScope ?? []);
+    }
     const branch = await this.prisma.branch.findFirst({
       where: { id: dto.homeBranchId, deletedAt: null },
     });
@@ -122,6 +128,22 @@ export class UsersService {
         code: 'BRANCH_OUT_OF_SCOPE',
         message: 'Home branch is outside your admin scope',
       });
+    }
+
+    // No one may change their OWN role or admin scope (self-escalation guard).
+    if (id === actor.sub && (dto.role !== undefined || dto.adminScope !== undefined)) {
+      throw new ForbiddenException({
+        code: 'CANNOT_EDIT_SELF',
+        message: 'You cannot change your own role or admin scope',
+      });
+    }
+
+    // Same subset rule when the update leaves the user an admin (incl. promotion):
+    // validate the resulting scope against the actor's own scope.
+    const resultingRole = dto.role ?? before.role;
+    if (resultingRole === Role.admin) {
+      const resultingScope = dto.adminScope ?? (before.adminScope as string[] | null) ?? [];
+      this.assertCanGrantScope(actor, resultingScope);
     }
 
     const updated = await this.prisma.user.update({
@@ -207,6 +229,31 @@ export class UsersService {
   }
 
   // --- internals -----------------------------------------------------------
+
+  /**
+   * Privilege-escalation guard for granting an admin scope (PRD §3, §14): an
+   * actor may only grant a scope they themselves hold.
+   *  - Only an actor with scope "all" may grant "all".
+   *  - A scoped actor may grant only a NON-EMPTY subset of their own branch ids.
+   * Throws 403 SCOPE_ESCALATION otherwise.
+   */
+  private assertCanGrantScope(actor: AuthUser, requested: string[]): void {
+    const wantsAll = requested.includes('all');
+    const actorAll =
+      actor.adminScope === 'all' ||
+      (Array.isArray(actor.adminScope) && actor.adminScope.includes('all'));
+
+    if (actorAll) return; // an "all" admin may grant anything
+
+    const own = Array.isArray(actor.adminScope) ? actor.adminScope : [];
+    const ok = !wantsAll && requested.length > 0 && requested.every((b) => own.includes(b));
+    if (!ok) {
+      throw new ForbiddenException({
+        code: 'SCOPE_ESCALATION',
+        message: 'You may only grant an admin scope within your own scope',
+      });
+    }
+  }
 
   private async findInScope(id: string, actor: AuthUser): Promise<User> {
     const user = await this.prisma.user.findFirst({
