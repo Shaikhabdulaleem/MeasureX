@@ -59,10 +59,12 @@ and inside `android { defaultConfig { } }`:
 ```kotlin
 externalNativeBuild {
     cmake {
-        // projectDir = apps/mobile/android/app ; repo root is four levels up.
+        // Forward slashes — CMake treats a backslash in a -D string as an
+        // escape, so raw Windows paths break. projectDir = .../android/app.
+        val repoRoot = projectDir.resolve("../../../..").canonicalFile.path.replace("\\", "/")
         arguments += listOf(
-            "-DOpenCV_DIR=${projectDir}/../../../../third_party/OpenCV-android-sdk/sdk/native/jni",
-            "-DMEASUREX_CORE_DIR=${projectDir}/../../../../packages/measure-core",
+            "-DOpenCV_DIR=$repoRoot/third_party/OpenCV-android-sdk/sdk/native/jni",
+            "-DMEASUREX_CORE_DIR=$repoRoot/packages/measure-core",
             "-DANDROID_STL=c++_static"
         )
     }
