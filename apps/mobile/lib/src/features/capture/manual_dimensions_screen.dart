@@ -9,20 +9,50 @@ import 'review_screen.dart';
 import 'widgets.dart';
 
 /// Manual L/W/H entry (cm) + mandatory photo (PRD §4 fallback, §5, §6).
+///
+/// Also the confirmation step for a marker measurement (Phase B): when
+/// [initialLengthMm]/[initialWidthMm] are supplied the L/W fields are prefilled
+/// and [method]/[confidence] are carried through to the saved version, so a
+/// camera measurement is persisted as `method = marker`. Height is entered by
+/// the worker (B1 does not measure it).
 class ManualDimensionsScreen extends ConsumerStatefulWidget {
-  const ManualDimensionsScreen({super.key});
+  const ManualDimensionsScreen({
+    super.key,
+    this.initialLengthMm,
+    this.initialWidthMm,
+    this.initialHeightMm,
+    this.method = 'manual',
+    this.confidence,
+  });
+
+  final int? initialLengthMm;
+  final int? initialWidthMm;
+  final int? initialHeightMm;
+  final String method;
+  final String? confidence;
 
   @override
-  ConsumerState<ManualDimensionsScreen> createState() => _ManualDimensionsScreenState();
+  ConsumerState<ManualDimensionsScreen> createState() =>
+      _ManualDimensionsScreenState();
 }
 
-class _ManualDimensionsScreenState extends ConsumerState<ManualDimensionsScreen> {
+class _ManualDimensionsScreenState
+    extends ConsumerState<ManualDimensionsScreen> {
   final _formKey = GlobalKey<FormState>();
   final _length = TextEditingController();
   final _width = TextEditingController();
   final _height = TextEditingController();
   Uint8List? _photo;
   bool _photoTouched = false;
+
+  @override
+  void initState() {
+    super.initState();
+    String cm(int? mm) => mm == null ? '' : (mm / 10).toStringAsFixed(1);
+    _length.text = cm(widget.initialLengthMm);
+    _width.text = cm(widget.initialWidthMm);
+    _height.text = cm(widget.initialHeightMm);
+  }
 
   @override
   void dispose() {
@@ -32,14 +62,17 @@ class _ManualDimensionsScreenState extends ConsumerState<ManualDimensionsScreen>
     super.dispose();
   }
 
-  int get _minCm => ref.read(effectiveConfigProvider).valueOrNull?.minDimensionCm ?? 1;
-  int get _maxCm => ref.read(effectiveConfigProvider).valueOrNull?.maxDimensionCm ?? 300;
+  int get _minCm =>
+      ref.read(effectiveConfigProvider).valueOrNull?.minDimensionCm ?? 1;
+  int get _maxCm =>
+      ref.read(effectiveConfigProvider).valueOrNull?.maxDimensionCm ?? 300;
 
   String? _validateDim(String? value, AppLocalizations l10n) {
     final text = value?.trim() ?? '';
     final parsed = double.tryParse(text);
     if (parsed == null) return '${l10n.eachSide} $_minCm–$_maxCm cm';
-    if (parsed < _minCm || parsed > _maxCm) return '${l10n.eachSide} $_minCm–$_maxCm cm';
+    if (parsed < _minCm || parsed > _maxCm)
+      return '${l10n.eachSide} $_minCm–$_maxCm cm';
     return null;
   }
 
@@ -60,7 +93,8 @@ class _ManualDimensionsScreenState extends ConsumerState<ManualDimensionsScreen>
     });
   }
 
-  int _toMm(TextEditingController c) => (double.parse(c.text.trim()) * 10).round();
+  int _toMm(TextEditingController c) =>
+      (double.parse(c.text.trim()) * 10).round();
 
   void _continue() {
     setState(() => _photoTouched = true);
@@ -74,6 +108,8 @@ class _ManualDimensionsScreenState extends ConsumerState<ManualDimensionsScreen>
           widthMm: _toMm(_width),
           heightMm: _toMm(_height),
           photoBytes: _photo!,
+          method: widget.method,
+          confidence: widget.confidence,
         ),
       ),
     );
@@ -85,7 +121,8 @@ class _ManualDimensionsScreenState extends ConsumerState<ManualDimensionsScreen>
     final number = ref.watch(captureControllerProvider).nextPackageNumber;
 
     return Scaffold(
-      appBar: AppBar(title: Text('${l10n.measure} — ${pkgLabel(l10n, number)}')),
+      appBar:
+          AppBar(title: Text('${l10n.measure} — ${pkgLabel(l10n, number)}')),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Form(
@@ -114,7 +151,8 @@ class _ManualDimensionsScreenState extends ConsumerState<ManualDimensionsScreen>
                 child: OutlinedButton.icon(
                   onPressed: _takePhoto,
                   icon: const Icon(Icons.camera_alt),
-                  label: Text(_photo == null ? l10n.takePhoto : l10n.retakePhoto),
+                  label:
+                      Text(_photo == null ? l10n.takePhoto : l10n.retakePhoto),
                 ),
               ),
               if (_photoTouched && _photo == null)
@@ -122,7 +160,8 @@ class _ManualDimensionsScreenState extends ConsumerState<ManualDimensionsScreen>
                   padding: const EdgeInsets.only(top: 8),
                   child: Text(
                     l10n.photoRequired,
-                    style: TextStyle(color: Theme.of(context).colorScheme.error),
+                    style:
+                        TextStyle(color: Theme.of(context).colorScheme.error),
                   ),
                 ),
               const SizedBox(height: 24),
@@ -140,7 +179,8 @@ class _ManualDimensionsScreenState extends ConsumerState<ManualDimensionsScreen>
     );
   }
 
-  Widget _dimField(TextEditingController c, String label, AppLocalizations l10n) {
+  Widget _dimField(
+      TextEditingController c, String label, AppLocalizations l10n) {
     return TextFormField(
       controller: c,
       keyboardType: const TextInputType.numberWithOptions(decimal: true),

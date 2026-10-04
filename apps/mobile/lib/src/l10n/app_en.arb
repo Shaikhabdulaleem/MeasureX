@@ -129,5 +129,18 @@
   "shipmentReopened": "Shipment reopened",
   "actionFailed": "Action failed. Please try again.",
   "version": "Version",
-  "current": "current"
+  "current": "current",
+  "measureWithCamera": "Measure with camera (beta)",
+  "measureWithCameraHint": "Point at the marker mat to measure automatically",
+  "enterManually": "Enter manually",
+  "enterManuallyHint": "Type length, width and height",
+  "measureEngineUnavailable": "The camera measurement engine is not available on this build.",
+  "markersDetected": "Markers",
+  "showMoreMarkers": "Show more of the mat (need at least 2 markers)",
+  "placeBoxOnMat": "Place the box inside the mat",
+  "useMeasurement": "Use this measurement",
+  "confidenceHigh": "High",
+  "confidenceMedium": "Medium",
+  "confidenceLow": "Low",
+  "heightEnteredManually": "Height is entered manually in the next step"
 }
