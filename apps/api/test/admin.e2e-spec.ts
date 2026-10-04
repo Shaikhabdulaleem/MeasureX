@@ -16,7 +16,9 @@ const prisma = new PrismaClient();
 let app: INestApplication;
 let server: ReturnType<INestApplication['getHttpServer']>;
 let branchId: string;
+let otherBranchId: string;
 let admin: AuthContext;
+let scopedAdmin: AuthContext; // admin scoped to `branchId` only
 let tl: AuthContext;
 let labour: AuthContext;
 
@@ -42,10 +44,16 @@ beforeAll(async () => {
     create: { key: 'actual_weight_required', value: false, scope: 'global' },
   });
   branchId = await createBranch(prisma, 'ADM');
+  otherBranchId = await createBranch(prisma, 'ADM2');
   admin = await createAndLogin(prisma, server, branchId, {
     employeeId: uniqueEmployeeId('ADM_ADMIN'),
     role: 'admin',
     adminScope: 'all',
+  });
+  scopedAdmin = await createAndLogin(prisma, server, branchId, {
+    employeeId: uniqueEmployeeId('ADM_SCOPED'),
+    role: 'admin',
+    adminScope: [branchId],
   });
   tl = await createAndLogin(prisma, server, branchId, {
     employeeId: uniqueEmployeeId('ADM_TL'),
@@ -120,6 +128,110 @@ describe('Users CRUD (Admin, PRD §3)', () => {
   it('forbids Team Leader and Labour from user management (403)', async () => {
     await request(server).get('/api/v1/users').set(authHeader(tl)).expect(403);
     await request(server).get('/api/v1/users').set(authHeader(labour)).expect(403);
+  });
+});
+
+describe('Admin privilege escalation (PRD §3, §14)', () => {
+  it('a scoped admin cannot create an "all" admin', async () => {
+    const res = await request(server)
+      .post('/api/v1/users')
+      .set(authHeader(scopedAdmin))
+      .send({
+        employeeId: uniqueEmployeeId('ESC_ALL'),
+        name: 'x',
+        role: 'admin',
+        homeBranchId: branchId,
+        adminScope: ['all'],
+      })
+      .expect(403);
+    expect(res.body.code).toBe('SCOPE_ESCALATION');
+  });
+
+  it('a scoped admin cannot grant a branch outside their scope', async () => {
+    const res = await request(server)
+      .post('/api/v1/users')
+      .set(authHeader(scopedAdmin))
+      .send({
+        employeeId: uniqueEmployeeId('ESC_BR'),
+        name: 'x',
+        role: 'admin',
+        homeBranchId: branchId,
+        adminScope: [branchId, otherBranchId],
+      })
+      .expect(403);
+    expect(res.body.code).toBe('SCOPE_ESCALATION');
+  });
+
+  it('a scoped admin CAN create an admin scoped to their own branch', async () => {
+    await request(server)
+      .post('/api/v1/users')
+      .set(authHeader(scopedAdmin))
+      .send({
+        employeeId: uniqueEmployeeId('ESC_OK'),
+        name: 'x',
+        role: 'admin',
+        homeBranchId: branchId,
+        adminScope: [branchId],
+      })
+      .expect(201);
+  });
+
+  it('an "all" admin can create an "all" admin', async () => {
+    await request(server)
+      .post('/api/v1/users')
+      .set(authHeader(admin))
+      .send({
+        employeeId: uniqueEmployeeId('ALL_ALL'),
+        name: 'x',
+        role: 'admin',
+        homeBranchId: branchId,
+        adminScope: ['all'],
+      })
+      .expect(201);
+  });
+
+  it('no one may change their own role or admin scope', async () => {
+    const res = await request(server)
+      .patch(`/api/v1/users/${scopedAdmin.userId}`)
+      .set(authHeader(scopedAdmin))
+      .send({ role: 'labour' })
+      .expect(403);
+    expect(res.body.code).toBe('CANNOT_EDIT_SELF');
+
+    await request(server)
+      .patch(`/api/v1/users/${scopedAdmin.userId}`)
+      .set(authHeader(scopedAdmin))
+      .send({ adminScope: ['all'] })
+      .expect(403);
+  });
+
+  it('promoting a user to admin via update enforces the subset rule', async () => {
+    // A plain labour user the scoped admin may manage (same branch).
+    const target = await request(server)
+      .post('/api/v1/users')
+      .set(authHeader(scopedAdmin))
+      .send({
+        employeeId: uniqueEmployeeId('PROMO'),
+        name: 'x',
+        role: 'labour',
+        homeBranchId: branchId,
+      })
+      .expect(201);
+
+    // Promote to admin with an out-of-scope branch → 403.
+    await request(server)
+      .patch(`/api/v1/users/${target.body.id}`)
+      .set(authHeader(scopedAdmin))
+      .send({ role: 'admin', adminScope: [otherBranchId] })
+      .expect(403);
+
+    // Promote to admin within scope → ok.
+    const ok = await request(server)
+      .patch(`/api/v1/users/${target.body.id}`)
+      .set(authHeader(scopedAdmin))
+      .send({ role: 'admin', adminScope: [branchId] })
+      .expect(200);
+    expect(ok.body.role).toBe('admin');
   });
 });
 
