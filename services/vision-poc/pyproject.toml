@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "measurex-vision"
+version = "0.0.1"
+description = "MeasureX camera-only shipment dimensioning — research POC (no mat, no marker, no reference object)."
+readme = "README.md"
+# Target runtime is Python 3.11 (see CLAUDE.md); >=3.11 lets the pure-geometry
+# layer run on newer interpreters until the model stack pins an exact version.
+requires-python = ">=3.11"
+license = { text = "Proprietary — internal Aymakan use" }
+
+# Core deps only. Heavy model/vision stacks live in optional extras so the
+# contracts + pure geometry + tests install and run without a GPU.
+dependencies = [
+    "numpy>=1.26,<3",
+]
+
+[project.optional-dependencies]
+# Installed in later milestones when models are integrated. Kept here as a
+# documented shopping list, intentionally un-pinned until each is adopted and
+# recorded in the model/license manifest (see VISION_DECISION.md §8).
+vision = [
+    "opencv-python-headless>=4.9",
+    "open3d>=0.18",
+    "pyyaml>=6",
+]
+dev = [
+    "pytest>=8",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+measurex-vision = "measurex_vision.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/measurex_vision"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

@@ -1,0 +1,42 @@
+# --- MeasureX vision POC ignores ---
+
+# Model weights / checkpoints (never commit — see CLAUDE.md "Model weights")
+*.pt
+*.pth
+*.onnx
+*.ckpt
+*.safetensors
+*.bin
+checkpoints/
+weights/
+models/
+
+# Benchmark + sample media (keep only tiny sanitized fixtures in Git)
+data/benchmark/
+data/samples/
+*.mp4
+*.mov
+*.MOV
+*.avi
+*.jpg
+*.jpeg
+*.png
+
+# Generated point clouds
+*.ply
+*.pcd
+*.npy
+*.npz
+
+# Run outputs / debug artifacts
+outputs/*
+!outputs/.gitkeep
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.env

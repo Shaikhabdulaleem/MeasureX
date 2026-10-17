@@ -97,3 +97,26 @@ jobs:
 
       - name: Test
         run: flutter test
+
+  vision-poc:
+    name: Lint & test (Vision POC, Python)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/vision-poc
+    steps:
+      - uses: actions/checkout@v4
+
+      # Target runtime per services/vision-poc/CLAUDE.md.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install (core + dev extras)
+        run: pip install -e ".[dev]"
+
+      - name: Lint
+        run: ruff check .
+
+      - name: Test
+        run: pytest
