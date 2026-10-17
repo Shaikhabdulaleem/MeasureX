@@ -9,10 +9,23 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from .contracts import Diagnostics, MeasurementFailure
+from .contracts import (
+    Diagnostics,
+    MeasurementFailure,
+    MeasurementResult,
+    MeasurementSuccess,
+)
 from .depth.base import DepthEstimator, DepthResult
 from .detection.base import Detection, Detector
-from .geometry import CameraIntrinsics, backproject_depth
+from .geometry import (
+    CameraIntrinsics,
+    backproject_depth,
+    extract_supported_dimensions,
+    fit_plane_ransac,
+    oriented_up,
+    segment_object_points,
+)
+from .quality.confidence import ConfidenceEstimator, HeuristicConfidenceEstimator
 from .quality.mask_checks import validate_mask
 from .segmentation.base import Segmenter
 
@@ -67,4 +80,63 @@ def build_masked_cloud(
     )
     return MaskedCloud(
         points_m=points, mask=mask, detection=target, depth=depth_result, diagnostics=diagnostics
+    )
+
+
+# Minimum object points below which a box fit isn't trustworthy.
+_MIN_OBJECT_POINTS = 30
+
+
+def build_measurement(
+    image: np.ndarray,
+    *,
+    detector: Detector,
+    segmenter: Segmenter,
+    depth: DepthEstimator,
+    confidence: ConfidenceEstimator | None = None,
+) -> MeasurementResult:
+    """Full M3 path: masked cloud -> support plane -> object -> L/W/H + confidence."""
+    cloud = build_masked_cloud(image, detector=detector, segmenter=segmenter, depth=depth)
+    if isinstance(cloud, MeasurementFailure):
+        return cloud
+    return measure_from_cloud(cloud, confidence=confidence)
+
+
+def measure_from_cloud(
+    cloud: MaskedCloud,
+    *,
+    confidence: ConfidenceEstimator | None = None,
+) -> MeasurementResult:
+    """Fit the support plane and box to an already-built masked cloud.
+
+    Separate from build_measurement so a --debug run can reuse one cloud for both
+    the artifacts and the measurement (no double inference)."""
+    from .contracts import FailureCode
+
+    try:
+        plane = fit_plane_ransac(cloud.points_m)
+        up = oriented_up(plane, cloud.points_m)
+        obj = segment_object_points(cloud.points_m, plane, up)
+        if obj.shape[0] < _MIN_OBJECT_POINTS:
+            return MeasurementFailure(failure_code=FailureCode.GEOMETRY_DEGENERATE)
+        dimensions = extract_supported_dimensions(obj, plane, up)
+    except (ValueError, np.linalg.LinAlgError):
+        return MeasurementFailure(failure_code=FailureCode.GEOMETRY_DEGENERATE)
+
+    evidence = {
+        **cloud.diagnostics.extra,
+        "plane_inlier_ratio": float(plane.inlier_mask.mean()),
+        "object_point_count": int(obj.shape[0]),
+    }
+    estimator = confidence or HeuristicConfidenceEstimator()
+    conf = estimator.estimate(evidence)
+
+    return MeasurementSuccess(
+        dimensions=dimensions,
+        confidence=conf,
+        diagnostics=Diagnostics(
+            assumptions=["fx=fy, principal point at image centre"],
+            extra=evidence,
+        ),
+        model_versions={"depth": cloud.depth.version},
     )

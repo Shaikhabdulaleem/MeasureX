@@ -24,52 +24,54 @@ _PENDING = {
 
 
 def _run_image(args) -> int:
+    from .contracts import MeasurementSuccess
     from .depth import get_depth_estimator
     from .detection import get_detector
     from .io import load_image
-    from .pipeline import MaskedCloud, build_masked_cloud
+    from .pipeline import (
+        MaskedCloud,
+        build_masked_cloud,
+        build_measurement,
+        measure_from_cloud,
+    )
     from .segmentation import get_segmenter
 
     image = load_image(args.path)
     # Only model-backed providers take a checkpoint; box_mask is model-free.
     seg_cfg = {"checkpoint_path": args.checkpoint} if args.segmenter != "box_mask" else {}
-    outcome = build_masked_cloud(
-        image,
-        detector=get_detector(args.detector),
-        segmenter=get_segmenter(args.segmenter, **seg_cfg),
-        depth=get_depth_estimator(args.provider, checkpoint_path=args.checkpoint),
-    )
-
-    if not isinstance(outcome, MaskedCloud):
-        print(json.dumps({"input": args.path, **outcome.to_dict()}, indent=2))
-        return 2
-
-    result = {
-        "stage": "masked_cloud",
-        "input": args.path,
-        "detector": args.detector,
-        "segmenter": args.segmenter,
-        "provider": args.provider,
-        "diagnostics": outcome.diagnostics.to_dict(),
-        "measurement": _PENDING,  # L/W/H arrives in M3 (plane + box fit)
+    providers = {
+        "detector": get_detector(args.detector),
+        "segmenter": get_segmenter(args.segmenter, **seg_cfg),
+        "depth": get_depth_estimator(args.provider, checkpoint_path=args.checkpoint),
     }
-    if args.debug:
-        from .visualization import save_cloud_artifacts, save_depth_artifacts
 
+    if args.debug:
+        # Build the cloud once; save artifacts; measure from the same cloud.
+        cloud = build_masked_cloud(image, **providers)
+        outcome = measure_from_cloud(cloud) if isinstance(cloud, MaskedCloud) else cloud
+        payload = {"input": args.path, **outcome.to_dict()}
         out_dir = os.environ.get("MEASUREX_VISION_OUTPUT_DIR", "./outputs")
-        result["artifacts"] = {
-            **save_depth_artifacts(out_dir, image, outcome.depth, mask=outcome.mask),
-            **save_cloud_artifacts(
-                out_dir,
-                image,
-                outcome.mask,
-                outcome.points_m,
-                bbox_xyxy=outcome.detection.bbox_xyxy,
-                diagnostics=outcome.diagnostics.to_dict(),
-            ),
-        }
-    print(json.dumps(result, indent=2))
-    return 0
+        if isinstance(cloud, MaskedCloud):
+            _save_debug_artifacts(out_dir, image, cloud, payload)
+    else:
+        outcome = build_measurement(image, **providers)
+        payload = {"input": args.path, **outcome.to_dict()}
+
+    print(json.dumps(payload, indent=2))
+    return 0 if isinstance(outcome, MeasurementSuccess) else 2
+
+
+def _save_debug_artifacts(out_dir: str, image, cloud, payload: dict) -> None:
+    from .visualization import save_cloud_artifacts, save_depth_artifacts
+
+    os.makedirs(out_dir, exist_ok=True)
+    save_depth_artifacts(out_dir, image, cloud.depth, mask=cloud.mask)
+    save_cloud_artifacts(
+        out_dir, image, cloud.mask, cloud.points_m,
+        bbox_xyxy=cloud.detection.bbox_xyxy, diagnostics=cloud.diagnostics.to_dict(),
+    )
+    with open(os.path.join(out_dir, "measurement.json"), "w", encoding="utf-8") as fh:
+        json.dump(payload, fh, indent=2)
 
 
 def build_parser() -> argparse.ArgumentParser:
