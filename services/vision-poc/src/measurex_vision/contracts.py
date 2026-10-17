@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Union
+from typing import Any
 
 
 class ConfidenceLevel(str, Enum):
@@ -102,7 +102,7 @@ class Confidence:
             raise ValueError(f"confidence score must be in [0, 1], got {self.score}")
 
     @classmethod
-    def from_score(cls, score: float) -> "Confidence":
+    def from_score(cls, score: float) -> Confidence:
         for threshold, level in _LEVEL_THRESHOLDS:
             if score >= threshold:
                 return cls(score=float(score), level=level)
@@ -182,4 +182,4 @@ class MeasurementFailure:
 
 
 # The engine returns exactly one of these.
-MeasurementResult = Union[MeasurementSuccess, MeasurementFailure]
+MeasurementResult = MeasurementSuccess | MeasurementFailure

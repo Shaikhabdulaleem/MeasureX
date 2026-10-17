@@ -11,13 +11,13 @@ from .intrinsics import CameraIntrinsics
 from .pointcloud import backproject, backproject_depth
 
 __all__ = [
-    "GeometryEstimator",
     "CameraIntrinsics",
+    "GeometryEstimator",
+    "OrientedBox",
     "backproject",
     "backproject_depth",
-    "OrientedBox",
-    "oriented_box",
-    "normalize_axes_to_lwh",
-    "metres_to_dimensions",
     "extract_dimensions",
+    "metres_to_dimensions",
+    "normalize_axes_to_lwh",
+    "oriented_box",
 ]

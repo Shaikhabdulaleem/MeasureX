@@ -35,7 +35,7 @@ def cuboid_surface_points(l_m: float, w_m: float, h_m: float, step: float = 0.02
     """
 
     def axis(length: float) -> np.ndarray:
-        n = max(2, int(round(length / step)) + 1)
+        n = max(2, round(length / step) + 1)
         return np.linspace(-length / 2.0, length / 2.0, n)
 
     xs, ys, zs = axis(l_m), axis(w_m), axis(h_m)

@@ -15,7 +15,7 @@ class CameraIntrinsics:
     cy: float
 
     @classmethod
-    def from_focal(cls, focal_px: float, width: int, height: int) -> "CameraIntrinsics":
+    def from_focal(cls, focal_px: float, width: int, height: int) -> CameraIntrinsics:
         """Build intrinsics from a single focal estimate.
 
         POC default when only one focal length is predicted: ``fx == fy`` and the

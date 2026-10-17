@@ -43,7 +43,7 @@ def metres_to_dimensions(length_m: float, width_m: float, height_m: float) -> Di
     server-side later, not here."""
 
     def to_mm(metres: float) -> int:
-        return int(round(metres * 1000.0))
+        return round(metres * 1000.0)
 
     return Dimensions(
         length_mm=to_mm(length_m),
