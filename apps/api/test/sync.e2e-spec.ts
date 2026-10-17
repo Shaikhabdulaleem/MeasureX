@@ -145,8 +145,11 @@ describe('POST /sync/batch — idempotent replay', () => {
 describe('POST /sync/batch — confirmed_at renumbering', () => {
   it('renumbers an already-assigned package when an earlier one syncs later', async () => {
     const awb = randomAwb();
-    const tLater = new Date('2026-10-03T10:05:00.000Z').toISOString();
-    const tEarlier = new Date('2026-10-03T10:00:00.000Z').toISOString();
+    // Relative to now (not absolute dates): a labour user only sees shipments
+    // confirmed within LABOUR_HISTORY_DAYS, so fixed past dates eventually age
+    // out of the window and 404 the GET below.
+    const tLater = new Date(Date.now() - 2 * 60 * 1000).toISOString();
+    const tEarlier = new Date(Date.now() - 5 * 60 * 1000).toISOString();
 
     // Package A confirmed later, synced first → PKG 01 for now.
     const a = item(awb, { confirmedAt: tLater });
@@ -246,9 +249,10 @@ describe('POST /sync/batch — shared-phone ownership', () => {
 describe('POST /sync/batch — renumber skips void/superseded numbers', () => {
   it('never reassigns a voided package number', async () => {
     const awb = randomAwb();
-    // Two packages: PKG 01 and PKG 02.
-    const t1 = new Date('2026-10-03T09:00:00.000Z').toISOString();
-    const t2 = new Date('2026-10-03T09:01:00.000Z').toISOString();
+    // Two packages: PKG 01 and PKG 02. Relative to now so they stay inside the
+    // labour history window (see note in the renumbering test above).
+    const t1 = new Date(Date.now() - 3 * 60 * 1000).toISOString();
+    const t2 = new Date(Date.now() - 2 * 60 * 1000).toISOString();
     const first = await syncBatch([item(awb, { confirmedAt: t1 })]).expect(200);
     const second = await syncBatch([item(awb, { confirmedAt: t2 })]).expect(200);
     const p2Id = second.body.results[0].id as string;
@@ -259,7 +263,7 @@ describe('POST /sync/batch — renumber skips void/superseded numbers', () => {
     await prisma.package.update({ where: { id: p2Id }, data: { status: 'void' } });
 
     // A new package must skip 2 and take 3.
-    const t3 = new Date('2026-10-03T09:02:00.000Z').toISOString();
+    const t3 = new Date(Date.now() - 1 * 60 * 1000).toISOString();
     const third = await syncBatch([item(awb, { confirmedAt: t3 })]).expect(200);
     expect(third.body.results[0].packageNumber).toBe(3);
 
