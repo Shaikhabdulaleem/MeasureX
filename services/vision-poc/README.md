@@ -14,13 +14,14 @@ Read first: [`docs/VISION_DECISION.md`](../../docs/VISION_DECISION.md),
 [`docs/VISION_BENCHMARK.md`](../../docs/VISION_BENCHMARK.md), and
 [`CLAUDE.md`](CLAUDE.md).
 
-## Status — Milestone 1 (depth)
+## Status — Milestone 5 (benchmark harness)
 
-M0 delivered the scaffold: domain contracts, provider interfaces, pure geometry,
-and synthetic point-cloud tests. **M1 adds the depth stage** behind the
-`DepthEstimator` interface plus depth debug artifacts. Detection, segmentation,
-point-cloud build and L/W/H are still later milestones, so `cli image` runs depth
-and emits depth diagnostics + artifacts — not a full measurement yet.
+The POC now runs end to end for still images and short videos. M0–M4 delivered
+the contracts, metric depth, target segmentation, support-plane geometry,
+integer-mm L/W/H, and robust temporal stabilization. **M5 adds the reproducible
+manifest benchmark and report generator.** Production integration remains out
+of scope until real benchmark evidence exists and an accuracy/confidence policy
+is approved.
 
 Depth providers (both behind the interface, see `MODELS.md`):
 
@@ -31,7 +32,8 @@ Depth providers (both behind the interface, see `MODELS.md`):
 ```
 src/measurex_vision/
   contracts.py            # Dimensions, Confidence, Diagnostics, Success, Failure
-  cli.py                  # `python -m measurex_vision.cli` (depth stage)
+  cli.py                  # image + stabilized-video measurement commands
+  benchmark.py            # manifest validation, metrics, summary + SVG reports
   io/image_loader.py      # load JPG/PNG -> RGB ndarray
   detection/base.py       # Detector interface (+ Detection)
   segmentation/base.py    # Segmenter interface
@@ -45,7 +47,7 @@ src/measurex_vision/
     pointcloud.py         # back-projection, depth-map -> point cloud
     bounding_box.py       # PCA oriented bounding box
     dimensions.py         # axis/orientation normalization + L/W/H + mm conversion
-  temporal/stabilizer.py  # TemporalStabilizer interface
+  temporal/               # TemporalStabilizer interface + MAD/median implementation
   quality/confidence.py   # ConfidenceEstimator interface
 ```
 
@@ -81,13 +83,36 @@ Weights are git-ignored and never committed. Read `MODELS.md` before downloading
 
 ```bash
 python -m measurex_vision.cli --help
-python -m measurex_vision.cli image path/to/image.jpg --debug   # depth stage + artifacts (needs the depth extra)
-python -m measurex_vision.cli video path/to/video.mp4 --debug   # not implemented yet
+python -m measurex_vision.cli image path/to/image.jpg --debug
+python -m measurex_vision.cli video path/to/video.mp4 --debug
 ```
 
-With `--debug`, depth artifacts (original, coloured depth, raw/masked depth,
-`diagnostics.json`) are written under `outputs/` (override with
-`MEASUREX_VISION_OUTPUT_DIR`).
+With `--debug`, inspectable artifacts are written under `outputs/` (override
+with `MEASUREX_VISION_OUTPUT_DIR`).
+
+## Benchmark
+
+Copy `data/benchmark-manifest.example.csv` to
+`data/benchmark/manifest.csv`, add physically measured integer-mm ground truth,
+and place media at paths relative to the manifest. The benchmark directory and
+generated reports are Git-ignored.
+
+```bash
+python scripts/benchmark.py data/benchmark/manifest.csv \
+  --false-success-tolerance-pct 10 \
+  --output-dir outputs/benchmark
+```
+
+The false-success tolerance is required intentionally: M5 does not invent an
+accuracy SLA. A success is a false success when any one of L/W/H exceeds that
+run's tolerance. The command produces `results.csv`, `summary.json`, dimension
+error distributions, grouped error charts, single-frame versus multi-frame
+comparison, and failure-code counts.
+
+To recalculate reports in CI or on a machine without models/codecs, pass
+`--predictions recorded-results.jsonl`. Each JSONL object contains `sample_id`
+plus the normal engine success/failure payload; IDs must exactly match the
+manifest. The two `data/*example*` files form a model-free smoke test.
 
 ## Test
 

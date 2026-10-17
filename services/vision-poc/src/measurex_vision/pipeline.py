@@ -1,11 +1,14 @@
-"""M2 pipeline: image -> detect -> segment -> gate -> depth -> masked cloud.
+"""Image/video measurement pipeline for the MeasureX vision POC.
 
-Stops at the masked point cloud (box fit + L/W/H are a later milestone). Reuses
-the M0 geometry (`backproject_depth`, `CameraIntrinsics`) and M1 depth."""
+Still images flow through detection, segmentation, depth, support-plane
+geometry and confidence scoring. Videos measure sampled frames and robustly
+stabilize their integer-mm dimensions. Per-stage timings feed the M5 benchmark.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
+from time import perf_counter
 
 import numpy as np
 
@@ -41,6 +44,7 @@ class MaskedCloud:
     detection: Detection
     depth: DepthResult
     diagnostics: Diagnostics = field(default_factory=Diagnostics)
+    timing_ms: dict[str, float] = field(default_factory=dict)
 
 
 MaskedCloudResult = MaskedCloud | MeasurementFailure
@@ -56,17 +60,24 @@ def build_masked_cloud(
     """Run the M2 pipeline; return a MaskedCloud or a typed MeasurementFailure."""
     from .contracts import FailureCode
 
+    stage_started = perf_counter()
     detections = detector.detect(image)
     if not detections:
         return MeasurementFailure(failure_code=FailureCode.NO_TARGET)
     target = detector.select_target(detections)
+    detection_ms = (perf_counter() - stage_started) * 1000.0
 
+    stage_started = perf_counter()
     mask = segmenter.segment(image, target.bbox_xyxy)
     gate = validate_mask(mask)
     if gate is not None:
         return MeasurementFailure(failure_code=gate)
+    segmentation_ms = (perf_counter() - stage_started) * 1000.0
 
+    stage_started = perf_counter()
     depth_result = depth.estimate(image)
+    depth_ms = (perf_counter() - stage_started) * 1000.0
+    stage_started = perf_counter()
     h, w = depth_result.depth_m.shape
     intr = CameraIntrinsics.from_focal(depth_result.focal_px, w, h)
     points = backproject_depth(depth_result.depth_m, intr, mask=mask)
@@ -83,7 +94,17 @@ def build_masked_cloud(
         }
     )
     return MaskedCloud(
-        points_m=points, mask=mask, detection=target, depth=depth_result, diagnostics=diagnostics
+        points_m=points,
+        mask=mask,
+        detection=target,
+        depth=depth_result,
+        diagnostics=diagnostics,
+        timing_ms={
+            "detection": detection_ms,
+            "segmentation": segmentation_ms,
+            "depth": depth_ms,
+            "pointcloud": (perf_counter() - stage_started) * 1000.0,
+        },
     )
 
 
@@ -100,10 +121,17 @@ def build_measurement(
     confidence: ConfidenceEstimator | None = None,
 ) -> MeasurementResult:
     """Full M3 path: masked cloud -> support plane -> object -> L/W/H + confidence."""
+    started = perf_counter()
     cloud = build_masked_cloud(image, detector=detector, segmenter=segmenter, depth=depth)
     if isinstance(cloud, MeasurementFailure):
         return cloud
-    return measure_from_cloud(cloud, confidence=confidence)
+    outcome = measure_from_cloud(cloud, confidence=confidence)
+    if isinstance(outcome, MeasurementSuccess):
+        return replace(
+            outcome,
+            timing_ms={**outcome.timing_ms, "total": (perf_counter() - started) * 1000.0},
+        )
+    return outcome
 
 
 def measure_from_cloud(
@@ -117,6 +145,7 @@ def measure_from_cloud(
     the artifacts and the measurement (no double inference)."""
     from .contracts import FailureCode
 
+    stage_started = perf_counter()
     try:
         plane = fit_plane_ransac(cloud.points_m)
         up = oriented_up(plane, cloud.points_m)
@@ -134,6 +163,11 @@ def measure_from_cloud(
     }
     estimator = confidence or HeuristicConfidenceEstimator()
     conf = estimator.estimate(evidence)
+    timing_ms = {
+        **cloud.timing_ms,
+        "geometry": (perf_counter() - stage_started) * 1000.0,
+    }
+    timing_ms["total"] = sum(timing_ms.values())
 
     return MeasurementSuccess(
         dimensions=dimensions,
@@ -143,6 +177,7 @@ def measure_from_cloud(
             extra=evidence,
         ),
         model_versions={"depth": cloud.depth.version},
+        timing_ms=timing_ms,
     )
 
 
@@ -169,7 +204,9 @@ def stabilize_measurements(
             ),
         )
 
+    stage_started = perf_counter()
     stab = (stabilizer or RobustTemporalStabilizer()).stabilize([s.dimensions for s in successes])
+    stabilization_ms = (perf_counter() - stage_started) * 1000.0
     dims = stab.dimensions
 
     # Spread gate: largest relative spread across L/W/H.
@@ -196,6 +233,14 @@ def stabilize_measurements(
     if conf.level is ConfidenceLevel.HIGH:
         conf = Confidence(score=conf.score, level=ConfidenceLevel.MEDIUM)
 
+    timing_ms: dict[str, float] = {}
+    for success in successes:
+        for stage, duration in success.timing_ms.items():
+            if stage != "total":
+                timing_ms[stage] = timing_ms.get(stage, 0.0) + duration
+    timing_ms["stabilization"] = stabilization_ms
+    timing_ms["total"] = sum(timing_ms.values())
+
     return MeasurementSuccess(
         dimensions=dims,
         confidence=conf,
@@ -209,6 +254,7 @@ def stabilize_measurements(
             },
         ),
         model_versions=successes[0].model_versions,
+        timing_ms=timing_ms,
     )
 
 
@@ -226,10 +272,17 @@ def build_measurement_video(
 
     if not frames:
         return MeasurementFailure(failure_code=FailureCode.NO_TARGET)
+    started = perf_counter()
     results = [
         build_measurement(
             f, detector=detector, segmenter=segmenter, depth=depth, confidence=confidence
         )
         for f in frames
     ]
-    return stabilize_measurements(results, stabilizer=stabilizer)
+    outcome = stabilize_measurements(results, stabilizer=stabilizer)
+    if isinstance(outcome, MeasurementSuccess):
+        return replace(
+            outcome,
+            timing_ms={**outcome.timing_ms, "total": (perf_counter() - started) * 1000.0},
+        )
+    return outcome

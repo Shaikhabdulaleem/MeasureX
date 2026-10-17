@@ -1,7 +1,7 @@
 """TemporalStabilizer provider interface — fuse per-frame dimensions.
 
-Concrete robust-statistics implementation (median + outlier rejection + spread)
-lands with the video pipeline in a later milestone.
+The concrete robust-statistics implementation uses median, MAD outlier rejection
+and per-dimension spread reporting.
 """
 
 from __future__ import annotations
