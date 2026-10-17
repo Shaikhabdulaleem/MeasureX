@@ -67,13 +67,13 @@ class GroundingDinoDetector(Detector):
         inputs = self._processor(images=pil, text=self.prompt, return_tensors="pt").to(self._device)
         with self._torch.no_grad():
             outputs = self._model(**inputs)
-        results = self._processor.post_process_grounded_object_detection(
-            outputs,
-            inputs["input_ids"],
-            box_threshold=self.box_threshold,
-            text_threshold=self.text_threshold,
-            target_sizes=[pil.size[::-1]],  # (height, width)
-        )[0]
+        post = self._processor.post_process_grounded_object_detection
+        kwargs = {"text_threshold": self.text_threshold, "target_sizes": [pil.size[::-1]]}
+        try:
+            # transformers >= 4.51 renamed box_threshold -> threshold.
+            results = post(outputs, inputs["input_ids"], threshold=self.box_threshold, **kwargs)[0]
+        except TypeError:
+            results = post(outputs, inputs["input_ids"], box_threshold=self.box_threshold, **kwargs)[0]
 
         detections: list[Detection] = []
         labels = results.get("labels") or results.get("text_labels") or []
