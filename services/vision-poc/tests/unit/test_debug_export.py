@@ -7,7 +7,12 @@ import json
 import numpy as np
 
 from measurex_vision.depth.base import DepthResult
-from measurex_vision.visualization import colorize_depth, save_depth_artifacts
+from measurex_vision.visualization import (
+    colorize_depth,
+    overlay_mask,
+    save_cloud_artifacts,
+    save_depth_artifacts,
+)
 
 
 def test_colorize_all_invalid_is_black():
@@ -71,3 +76,21 @@ def test_save_depth_artifacts_without_mask(tmp_path, sample_image, mock_estimato
     paths = save_depth_artifacts(str(tmp_path), sample_image, depth)
     assert "depth_masked.npy" not in paths
     assert (tmp_path / "depth_color.png").exists()
+
+
+def test_overlay_and_cloud_artifacts(tmp_path, sample_image):
+    mask = np.zeros(sample_image.shape[:2], dtype=bool)
+    mask[2:6, 3:9] = True
+    overlay = overlay_mask(sample_image, mask, bbox_xyxy=(3, 2, 9, 6))
+    assert overlay.shape == sample_image.shape
+    assert overlay.dtype == np.uint8
+
+    points = np.random.default_rng(0).normal(size=(120, 3))
+    save_cloud_artifacts(
+        str(tmp_path), sample_image, mask, points, bbox_xyxy=(3, 2, 9, 6),
+        diagnostics={"mask_area_ratio": float(mask.mean())},
+    )
+    for name in ("mask_overlay.png", "mask.npy", "points.npy", "cloud_diagnostics.json"):
+        assert (tmp_path / name).exists()
+    diag = json.loads((tmp_path / "cloud_diagnostics.json").read_text())
+    assert diag["point_count"] == 120
