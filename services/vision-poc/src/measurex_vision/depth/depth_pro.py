@@ -23,6 +23,7 @@ class DepthProEstimator(DepthEstimator):
         self.device = device
         self._model = None
         self._transform = None
+        self._device = None
 
     def _resolve_device(self) -> str:
         if self.device != "auto":
@@ -46,15 +47,18 @@ class DepthProEstimator(DepthEstimator):
             config.checkpoint_uri = self.checkpoint_path
         model, transform = depth_pro.create_model_and_transforms(config=config)
         model.eval()
-        self._model = model.to(self._resolve_device())
+        self._device = self._resolve_device()
+        self._model = model.to(self._device)
         self._transform = transform
         self._torch = torch
 
     def estimate(self, image: np.ndarray) -> DepthResult:
         self._load()
         assert self._model is not None and self._transform is not None
+        # infer() does not move its input, so match the model's device.
+        x = self._transform(image).to(self._device)
         with self._torch.no_grad():
-            prediction = self._model.infer(self._transform(image))
+            prediction = self._model.infer(x)
         depth_m = np.asarray(prediction["depth"].cpu(), dtype=float)
         focal_px = float(prediction["focallength_px"])
         valid = np.isfinite(depth_m) & (depth_m > 0)

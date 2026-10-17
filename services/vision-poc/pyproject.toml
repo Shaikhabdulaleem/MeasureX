@@ -40,7 +40,8 @@ depth = [
 seg = [
     "torch>=2.2",
     "pillow>=10",
-    "sam2 @ git+https://github.com/facebookresearch/sam2.git",
+    # Distribution name is SAM-2 (normalizes to sam-2); `sam2 @ ...` fails pip's name check.
+    "SAM-2 @ git+https://github.com/facebookresearch/sam2.git",
 ]
 dev = [
     "pytest>=8",
