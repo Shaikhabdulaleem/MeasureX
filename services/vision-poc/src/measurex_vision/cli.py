@@ -4,9 +4,9 @@
     python -m measurex_vision.cli image path/to/image.jpg --debug
     python -m measurex_vision.cli video path/to/video.mp4 --debug
 
-M1: ``image`` runs the depth stage (``DepthEstimator``) and, with ``--debug``,
-writes depth artifacts, then prints depth diagnostics as JSON. Full L/W/H
-(detection + segmentation + geometry) and ``video`` are later milestones.
+``image`` runs the full single-frame pipeline (detect → segment → depth → plane
+→ L/W/H); ``video`` samples frames, measures each, and temporally stabilizes.
+Both print a MeasurementSuccess/Failure JSON; ``--debug`` writes artifacts.
 """
 
 from __future__ import annotations
@@ -16,11 +16,6 @@ import json
 import os
 
 from . import __version__
-
-_PENDING = {
-    "status": "not_implemented",
-    "message": "Not wired yet (later milestone). See services/vision-poc/CLAUDE.md.",
-}
 
 
 def _run_image(args) -> int:
@@ -74,6 +69,32 @@ def _save_debug_artifacts(out_dir: str, image, cloud, payload: dict) -> None:
         json.dump(payload, fh, indent=2)
 
 
+def _run_video(args) -> int:
+    from .contracts import MeasurementSuccess
+    from .depth import get_depth_estimator
+    from .detection import get_detector
+    from .io import sample_frames
+    from .pipeline import build_measurement_video
+    from .segmentation import get_segmenter
+
+    frames = sample_frames(args.path, max_frames=args.max_frames)
+    seg_cfg = {"checkpoint_path": args.checkpoint} if args.segmenter != "box_mask" else {}
+    outcome = build_measurement_video(
+        frames,
+        detector=get_detector(args.detector),
+        segmenter=get_segmenter(args.segmenter, **seg_cfg),
+        depth=get_depth_estimator(args.provider, checkpoint_path=args.checkpoint),
+    )
+    payload = {"input": args.path, "capture_type": "video", **outcome.to_dict()}
+    if args.debug:
+        out_dir = os.environ.get("MEASUREX_VISION_OUTPUT_DIR", "./outputs")
+        os.makedirs(out_dir, exist_ok=True)
+        with open(os.path.join(out_dir, "measurement.json"), "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, indent=2)
+    print(json.dumps(payload, indent=2))
+    return 0 if isinstance(outcome, MeasurementSuccess) else 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="measurex-vision",
@@ -90,9 +111,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_image.add_argument("--checkpoint", default=None, help="model checkpoint path (else env/default)")
     p_image.add_argument("--debug", action="store_true", help="save debug artifacts")
 
-    p_video = sub.add_parser("video", help="measure from a short MP4/MOV video")
+    p_video = sub.add_parser("video", help="stabilized measurement from a short MP4/MOV video")
     p_video.add_argument("path", help="path to the video file")
-    p_video.add_argument("--debug", action="store_true", help="save intermediate debug artifacts")
+    p_video.add_argument("--detector", default="central_candidate", help="detector (default: central_candidate)")
+    p_video.add_argument("--segmenter", default="sam2", help="segmenter (default: sam2)")
+    p_video.add_argument("--provider", default="depth_pro", help="depth provider (default: depth_pro)")
+    p_video.add_argument("--checkpoint", default=None, help="model checkpoint path (else env/default)")
+    p_video.add_argument("--max-frames", type=int, default=8, help="frames to sample (default: 8)")
+    p_video.add_argument("--debug", action="store_true", help="save measurement.json")
 
     return parser
 
@@ -103,8 +129,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "image":
         return _run_image(args)
     if args.command == "video":
-        print(json.dumps({**_PENDING, "input": args.path, "capture_type": "video"}, indent=2))
-        return 2
+        return _run_video(args)
     parser.print_help()
     return 0
 
