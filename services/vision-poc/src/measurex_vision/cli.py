@@ -103,7 +103,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--version", action="version", version=f"measurex-vision {__version__}")
     sub = parser.add_subparsers(dest="command", metavar="{image,video}")
 
-    p_image = sub.add_parser("image", help="detect + segment + depth -> masked cloud (single image)")
+    p_image = sub.add_parser("image", help="single-image L/W/H measurement")
     p_image.add_argument("path", help="path to the image file")
     p_image.add_argument("--detector", default="central_candidate", help="detector (default: central_candidate)")
     p_image.add_argument("--segmenter", default="sam2", help="segmenter (default: sam2)")

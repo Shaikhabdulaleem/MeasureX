@@ -24,6 +24,8 @@ def test_build_masked_cloud_success(mock_estimator):
     # 0.6 box over the frame -> ~0.36 mask area.
     assert 0.3 < out.diagnostics.extra["mask_area_ratio"] < 0.4
     assert out.diagnostics.extra["point_count"] == out.points_m.shape[0]
+    assert set(out.timing_ms) == {"detection", "segmentation", "depth", "pointcloud"}
+    assert all(value >= 0 for value in out.timing_ms.values())
 
 
 def test_build_masked_cloud_gated_mask(mock_estimator):

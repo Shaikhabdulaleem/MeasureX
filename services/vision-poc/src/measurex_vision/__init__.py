@@ -1,7 +1,8 @@
 """MeasureX camera-only Vision Engine — research POC.
 
-Milestone 0 (scaffold): domain contracts, provider interfaces, and pure
-geometry utilities with synthetic tests. No AI models are integrated yet.
+M0–M5 provide image/video measurement, temporal stabilization, and a
+manifest-driven benchmark harness. Production integration remains gated on
+real benchmark evidence and an approved accuracy/confidence policy.
 
 See ``docs/VISION_ENGINE_POC.md`` and ``services/vision-poc/CLAUDE.md``.
 """

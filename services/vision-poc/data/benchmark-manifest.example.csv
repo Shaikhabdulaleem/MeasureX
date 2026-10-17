@@ -1,0 +1,3 @@
+sample_id,object_id,category,phone_model,capture_type,file_path,gt_length_mm,gt_width_mm,gt_height_mm,lighting,distance_band,notes
+BOX_001_IMG_001,BOX_001,small,example_phone,image,objects/BOX_001/example_phone/image_001.jpg,400,300,200,warehouse,near,Replace with physically measured ground truth
+BOX_001_VID_001,BOX_001,small,example_phone,video,objects/BOX_001/example_phone/video_001.mp4,400,300,200,warehouse,near,Short multi-angle capture

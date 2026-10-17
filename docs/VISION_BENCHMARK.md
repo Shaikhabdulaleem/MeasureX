@@ -123,6 +123,19 @@ Confidence calibration should minimize false successes.
 - single-frame vs multi-frame comparison,
 - failure-code counts.
 
+Run it from `services/vision-poc` with an explicit experimental tolerance:
+
+```bash
+python scripts/benchmark.py data/benchmark/manifest.csv \
+  --false-success-tolerance-pct 10 \
+  --output-dir outputs/benchmark
+```
+
+There is deliberately no default tolerance: supplying a value records the
+experiment rule without turning it into a product accuracy SLA. For model-free
+report regeneration, `--predictions recorded-results.jsonl` accepts one normal
+engine result payload per manifest `sample_id`.
+
 Do not manually edit benchmark outputs.
 
 ## Initial experiment questions

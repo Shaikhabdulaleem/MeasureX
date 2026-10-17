@@ -36,6 +36,8 @@ def test_measure_from_cloud_success(box_on_floor):
     d = out.to_dict()
     assert d["success"] is True
     assert d["method"] == "rgb_ai"
+    assert set(d["timing_ms"]) == {"geometry", "total"}
+    assert d["timing_ms"]["total"] >= d["timing_ms"]["geometry"]
 
 
 def test_measure_from_cloud_degenerate():

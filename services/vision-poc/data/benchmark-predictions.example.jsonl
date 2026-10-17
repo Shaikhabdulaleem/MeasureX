@@ -1,0 +1,2 @@
+{"sample_id":"BOX_001_IMG_001","success":true,"dimensions":{"length_mm":408,"width_mm":297,"height_mm":204},"confidence":0.72,"confidence_level":"medium","method":"rgb_ai","model_versions":{"depth":"example"},"timing_ms":{"depth":20.0,"geometry":8.0,"total":35.0},"diagnostics":{}}
+{"sample_id":"BOX_001_VID_001","success":false,"failure_code":"temporal_instability","user_guidance":"Readings unstable. Hold the phone steady and retry.","diagnostics":{"frames_total":8,"frames_ok":2}}

@@ -18,3 +18,7 @@ data/
 ```
 
 Ground truth is measured with a trusted tool and recorded in integer millimetres.
+Start from `benchmark-manifest.example.csv`; do not commit the populated manifest
+or media. Generate reports with `python scripts/benchmark.py` as documented in
+the service README. Reports go to `outputs/benchmark/` and must not be edited by
+hand.
