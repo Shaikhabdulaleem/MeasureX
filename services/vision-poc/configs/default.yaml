@@ -1,0 +1,26 @@
+# Default configuration for the MeasureX vision POC.
+# Values here are placeholders for later milestones; the M0 scaffold does not
+# load this file yet. Thresholds are experimental until the benchmark exists.
+
+output_dir: ./outputs
+
+# Checkpoint locations (configurable; weights are never committed).
+models:
+  depth:
+    provider: depth_pro
+    checkpoint: ${MEASUREX_DEPTH_CHECKPOINT:-./weights/depth_pro.pt}
+  segmenter:
+    provider: sam2
+    checkpoint: ${MEASUREX_SAM2_CHECKPOINT:-./weights/sam2.pt}
+  detector:
+    provider: grounding_dino
+    checkpoint: ${MEASUREX_GDINO_CHECKPOINT:-./weights/grounding_dino.pth}
+    prompt: "box . carton . parcel . package . pallet . bag . furniture"
+
+geometry:
+  up_axis: [0.0, 0.0, 1.0]
+
+# Placeholder confidence thresholds — NOT calibrated (VISION_ENGINE_POC.md §9).
+confidence:
+  high: 0.85
+  medium: 0.60
