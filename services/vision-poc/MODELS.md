@@ -11,19 +11,20 @@ Weights are never committed to this repository.
 
 ## Depth estimation
 
-| Field | Depth Pro | Depth Anything V2 (metric) |
-| --- | --- | --- |
-| Role | Metric depth — **POC/benchmark baseline** | Commercial slot — **planned, not implemented** |
-| Code repo | https://github.com/apple/ml-depth-pro | https://github.com/DepthAnything/Depth-Anything-V2 |
-| Weights | https://huggingface.co/apple/DepthPro | (to confirm at adoption) |
-| Version / commit | checkpoint `depth_pro.pt` (record exact revision on download) | — |
-| Code license | Apple sample-code license (see repo) | Apache-2.0 (to confirm per checkpoint) |
-| **Weight license** | **Apple-ASCL — research only** | **to confirm** (metric checkpoints vary) |
-| **Commercial use** | **NO** | TBD at adoption |
-| Download source | `scripts/download_models.py` → Hugging Face `apple/DepthPro` | — |
-| Status | Active (research/benchmark; **not for production**) | Planned — `get_depth_estimator("depth_anything_v2")` raises `NotImplementedError` |
+| Field              | Depth Pro                                                     | Depth Anything V2 (metric)                                                        |
+| ------------------ | ------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| Role               | Metric depth — **POC/benchmark baseline**                     | Commercial slot — **planned, not implemented**                                    |
+| Code repo          | https://github.com/apple/ml-depth-pro                         | https://github.com/DepthAnything/Depth-Anything-V2                                |
+| Weights            | https://huggingface.co/apple/DepthPro                         | (to confirm at adoption)                                                          |
+| Version / commit   | checkpoint `depth_pro.pt` (record exact revision on download) | —                                                                                 |
+| Code license       | Apple sample-code license (see repo)                          | Apache-2.0 (to confirm per checkpoint)                                            |
+| **Weight license** | **Apple-ASCL — research only**                                | **to confirm** (metric checkpoints vary)                                          |
+| **Commercial use** | **NO**                                                        | TBD at adoption                                                                   |
+| Download source    | `scripts/download_models.py` → Hugging Face `apple/DepthPro`  | —                                                                                 |
+| Status             | Active (research/benchmark; **not for production**)           | Planned — `get_depth_estimator("depth_anything_v2")` raises `NotImplementedError` |
 
 ### Notes
+
 - Depth Pro weights are **not licensed for commercial use**. They are integrated
   here solely to establish the camera-only accuracy baseline and run the
   benchmark. Do not ship them in a MeasureX production build.

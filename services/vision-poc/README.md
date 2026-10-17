@@ -23,9 +23,10 @@ point-cloud build and L/W/H are still later milestones, so `cli image` runs dept
 and emits depth diagnostics + artifacts — not a full measurement yet.
 
 Depth providers (both behind the interface, see `MODELS.md`):
+
 - **Depth Pro** — metric-depth baseline. Weights are **Apple-ASCL: research /
   benchmark only, NOT for production**.
-- **Depth Anything V2** — commercial slot, *planned* (raises `NotImplementedError`).
+- **Depth Anything V2** — commercial slot, _planned_ (raises `NotImplementedError`).
 
 ```
 src/measurex_vision/

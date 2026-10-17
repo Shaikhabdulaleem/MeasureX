@@ -15,7 +15,7 @@ models:
   detector:
     provider: grounding_dino
     checkpoint: ${MEASUREX_GDINO_CHECKPOINT:-./weights/grounding_dino.pth}
-    prompt: "box . carton . parcel . package . pallet . bag . furniture"
+    prompt: 'box . carton . parcel . package . pallet . bag . furniture'
 
 geometry:
   up_axis: [0.0, 0.0, 1.0]
