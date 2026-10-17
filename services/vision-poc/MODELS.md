@@ -36,16 +36,21 @@ Weights are never committed to this repository.
 | Download source    | `scripts/download_models.py` (SAM 2 checkpoint)                |
 | Status             | Active (segmenter)                                             |
 
-## Detection (open-vocabulary, optional)
+## Detection (open-vocabulary) — shipment target proposer
 
-| Field              | Grounding DINO                                                                      |
-| ------------------ | ----------------------------------------------------------------------------------- |
-| Role               | Optional automatic shipment detection (default is the model-free central-candidate) |
-| Code repo          | https://github.com/IDEA-Research/GroundingDINO                                      |
-| Code license       | Apache-2.0                                                                          |
-| **Weight license** | **Apache-2.0** (confirm exact checkpoint at adoption)                               |
-| **Commercial use** | YES (confirm per checkpoint)                                                        |
-| Status             | Optional — not required for controlled POC images                                   |
+| Field                  | Grounding DINO                                                     |
+| ---------------------- | ----------------------------------------------------------------- |
+| Role                   | Locate the shipment and hand SAM 2 a tight prompt box             |
+| Model                  | `IDEA-Research/grounding-dino-tiny` (via `transformers`)          |
+| Checkpoint source      | Hugging Face `IDEA-Research/grounding-dino-tiny`                  |
+| Code repo              | https://github.com/IDEA-Research/GroundingDINO                    |
+| Code license           | Apache-2.0                                                        |
+| **Weight license**     | **Apache-2.0** (confirm exact checkpoint)                        |
+| **Commercial use**     | **YES**                                                          |
+| **PRODUCTION_ALLOWED** | **true** (confirm checkpoint at productionization)               |
+| Expected VRAM          | ~1–2 GB (tiny)                                                    |
+| Runtime hardware       | NVIDIA GPU; feasible on CPU, slower                              |
+| Status                 | Active — target proposer (`--detector grounding_dino`)           |
 
 ### Notes
 

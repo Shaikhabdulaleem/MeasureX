@@ -22,6 +22,7 @@ from .contracts import (
 )
 from .depth.base import DepthEstimator, DepthResult
 from .detection.base import Detection, Detector
+from .detection.select import classify_target
 from .geometry import (
     CameraIntrinsics,
     backproject_depth,
@@ -62,9 +63,11 @@ def build_masked_cloud(
 
     stage_started = perf_counter()
     detections = detector.detect(image)
-    if not detections:
+    kind, target = classify_target(detections)
+    if kind == "multiple":
+        return MeasurementFailure(failure_code=FailureCode.MULTIPLE_TARGETS)
+    if kind == "none" or target is None:
         return MeasurementFailure(failure_code=FailureCode.NO_TARGET)
-    target = detector.select_target(detections)
     detection_ms = (perf_counter() - stage_started) * 1000.0
 
     stage_started = perf_counter()
