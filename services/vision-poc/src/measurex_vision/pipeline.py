@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from .contracts import (
+    Confidence,
+    ConfidenceLevel,
     Diagnostics,
     MeasurementFailure,
     MeasurementResult,
@@ -28,6 +30,8 @@ from .geometry import (
 from .quality.confidence import ConfidenceEstimator, HeuristicConfidenceEstimator
 from .quality.mask_checks import validate_mask
 from .segmentation.base import Segmenter
+from .temporal.robust import RobustTemporalStabilizer
+from .temporal.stabilizer import TemporalStabilizer
 
 
 @dataclass(frozen=True)
@@ -140,3 +144,92 @@ def measure_from_cloud(
         ),
         model_versions={"depth": cloud.depth.version},
     )
+
+
+def stabilize_measurements(
+    results: list[MeasurementResult],
+    *,
+    stabilizer: TemporalStabilizer | None = None,
+    min_frames: int = 3,
+    max_spread_ratio: float = 0.1,
+) -> MeasurementResult:
+    """Fuse per-frame results into one stabilized measurement.
+
+    Pure over already-computed per-frame results (the CI-tested seam). Too few
+    successful frames, or a per-dimension spread too large relative to the
+    median, fails as TEMPORAL_INSTABILITY."""
+    from .contracts import FailureCode
+
+    successes = [r for r in results if isinstance(r, MeasurementSuccess)]
+    if len(successes) < min_frames:
+        return MeasurementFailure(
+            failure_code=FailureCode.TEMPORAL_INSTABILITY,
+            diagnostics=Diagnostics(
+                extra={"frames_total": len(results), "frames_ok": len(successes)}
+            ),
+        )
+
+    stab = (stabilizer or RobustTemporalStabilizer()).stabilize([s.dimensions for s in successes])
+    dims = stab.dimensions
+
+    # Spread gate: largest relative spread across L/W/H.
+    rel = max(
+        stab.spread_mm[name] / max(1, getattr(dims, f"{name}_mm"))
+        for name in ("length", "width", "height")
+    )
+    if rel > max_spread_ratio:
+        return MeasurementFailure(
+            failure_code=FailureCode.TEMPORAL_INSTABILITY,
+            diagnostics=Diagnostics(
+                extra={
+                    "frames_total": len(results),
+                    "frames_ok": len(successes),
+                    "dimension_spread_mm": stab.spread_mm,
+                }
+            ),
+        )
+
+    # Confidence: median of per-frame scores, penalized by relative spread, capped.
+    scores = sorted(s.confidence.score for s in successes)
+    median_score = scores[len(scores) // 2]
+    conf = Confidence.from_score(max(0.0, median_score * (1.0 - rel)))
+    if conf.level is ConfidenceLevel.HIGH:
+        conf = Confidence(score=conf.score, level=ConfidenceLevel.MEDIUM)
+
+    return MeasurementSuccess(
+        dimensions=dims,
+        confidence=conf,
+        diagnostics=Diagnostics(
+            assumptions=["fx=fy, principal point at image centre"],
+            extra={
+                "frame_count": stab.frame_count,
+                "frames_total": len(results),
+                "frames_ok": len(successes),
+                "dimension_spread_mm": stab.spread_mm,
+            },
+        ),
+        model_versions=successes[0].model_versions,
+    )
+
+
+def build_measurement_video(
+    frames: list[np.ndarray],
+    *,
+    detector: Detector,
+    segmenter: Segmenter,
+    depth: DepthEstimator,
+    stabilizer: TemporalStabilizer | None = None,
+    confidence: ConfidenceEstimator | None = None,
+) -> MeasurementResult:
+    """Measure each frame (M3) then temporally stabilize."""
+    from .contracts import FailureCode
+
+    if not frames:
+        return MeasurementFailure(failure_code=FailureCode.NO_TARGET)
+    results = [
+        build_measurement(
+            f, detector=detector, segmenter=segmenter, depth=depth, confidence=confidence
+        )
+        for f in frames
+    ]
+    return stabilize_measurements(results, stabilizer=stabilizer)
