@@ -23,6 +23,30 @@ Weights are never committed to this repository.
 | Download source    | `scripts/download_models.py` → Hugging Face `apple/DepthPro`  | —                                                                                 |
 | Status             | Active (research/benchmark; **not for production**)           | Planned — `get_depth_estimator("depth_anything_v2")` raises `NotImplementedError` |
 
+## Segmentation
+
+| Field              | SAM 2                                                          |
+| ------------------ | -------------------------------------------------------------- |
+| Role               | Shipment segmentation (box → mask)                             |
+| Code repo          | https://github.com/facebookresearch/sam2                       |
+| Weights            | HF `facebook/sam2-hiera-*` (record exact revision on download) |
+| Code license       | Apache-2.0 (eval code BSD-3-Clause)                            |
+| **Weight license** | **Apache-2.0**                                                 |
+| **Commercial use** | **YES**                                                        |
+| Download source    | `scripts/download_models.py` (SAM 2 checkpoint)                |
+| Status             | Active (segmenter)                                             |
+
+## Detection (open-vocabulary, optional)
+
+| Field              | Grounding DINO                                                                      |
+| ------------------ | ----------------------------------------------------------------------------------- |
+| Role               | Optional automatic shipment detection (default is the model-free central-candidate) |
+| Code repo          | https://github.com/IDEA-Research/GroundingDINO                                      |
+| Code license       | Apache-2.0                                                                          |
+| **Weight license** | **Apache-2.0** (confirm exact checkpoint at adoption)                               |
+| **Commercial use** | YES (confirm per checkpoint)                                                        |
+| Status             | Optional — not required for controlled POC images                                   |
+
 ### Notes
 
 - Depth Pro weights are **not licensed for commercial use**. They are integrated

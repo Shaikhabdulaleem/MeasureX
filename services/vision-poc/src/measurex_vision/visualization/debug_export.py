@@ -93,3 +93,63 @@ def save_depth_artifacts(
     paths["diagnostics.json"] = diag_path
 
     return paths
+
+
+def overlay_mask(
+    image: np.ndarray,
+    mask: np.ndarray,
+    bbox_xyxy: tuple[float, float, float, float] | None = None,
+) -> np.ndarray:
+    """Blend a green mask tint onto the image and draw the detection box."""
+    out = np.asarray(image, dtype=np.uint8).copy()
+    m = np.asarray(mask, dtype=bool)
+    tint = np.array([0, 255, 0], dtype=np.uint8)
+    out[m] = (0.5 * out[m] + 0.5 * tint).astype(np.uint8)
+    if bbox_xyxy is not None:
+        h, w = out.shape[:2]
+        x0, y0, x1, y1 = (round(v) for v in bbox_xyxy)
+        x0, x1 = max(0, x0), min(w - 1, x1)
+        y0, y1 = max(0, y0), min(h - 1, y1)
+        if x1 > x0 and y1 > y0:
+            out[y0, x0:x1] = tint
+            out[y1, x0:x1] = tint
+            out[y0:y1, x0] = tint
+            out[y0:y1, x1] = tint
+    return out
+
+
+def save_cloud_artifacts(
+    out_dir: str,
+    image: np.ndarray,
+    mask: np.ndarray,
+    points: np.ndarray,
+    bbox_xyxy: tuple[float, float, float, float] | None = None,
+    diagnostics: dict | None = None,
+) -> dict[str, str]:
+    """Write mask overlay, raw mask, point cloud, and cloud diagnostics."""
+    from PIL import Image
+
+    os.makedirs(out_dir, exist_ok=True)
+    paths: dict[str, str] = {}
+
+    overlay = overlay_mask(image, mask, bbox_xyxy)
+    overlay_path = os.path.join(out_dir, "mask_overlay.png")
+    Image.fromarray(overlay).save(overlay_path)
+    paths["mask_overlay.png"] = overlay_path
+
+    mask_path = os.path.join(out_dir, "mask.npy")
+    np.save(mask_path, np.asarray(mask, dtype=bool))
+    paths["mask.npy"] = mask_path
+
+    points_path = os.path.join(out_dir, "points.npy")
+    np.save(points_path, np.asarray(points, dtype=float))
+    paths["points.npy"] = points_path
+
+    diag = dict(diagnostics or {})
+    diag.setdefault("point_count", int(np.asarray(points).shape[0]))
+    diag_path = os.path.join(out_dir, "cloud_diagnostics.json")
+    with open(diag_path, "w", encoding="utf-8") as fh:
+        json.dump(diag, fh, indent=2)
+    paths["cloud_diagnostics.json"] = diag_path
+
+    return paths
