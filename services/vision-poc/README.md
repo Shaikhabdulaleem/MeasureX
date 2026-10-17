@@ -79,6 +79,14 @@ python scripts/download_models.py  # fetch Depth Pro checkpoint (Apple-ASCL, res
 
 Weights are git-ignored and never committed. Read `MODELS.md` before downloading.
 
+**No local GPU?** Run the real pipeline on a cloud GPU with the M6 validation
+notebook — it clones the repo, installs the stack, downloads weights, runs a real
+photo + video, and benchmarks against your tape-measured box:
+- Google Colab (primary): [`notebooks/MeasureX_GPU_Validation.ipynb`](notebooks/MeasureX_GPU_Validation.ipynb)
+- Kaggle (fallback): [`docs/KAGGLE_GPU_SETUP.md`](docs/KAGGLE_GPU_SETUP.md)
+
+Record results in [`docs/REAL_GPU_VALIDATION_REPORT.md`](docs/REAL_GPU_VALIDATION_REPORT.md).
+
 ## Run
 
 ```bash
