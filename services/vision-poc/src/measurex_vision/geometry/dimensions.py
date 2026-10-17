@@ -6,6 +6,7 @@ import numpy as np
 
 from ..contracts import Dimensions
 from .bounding_box import oriented_box
+from .planes import Plane, point_plane_distance
 
 # World up-axis. The real pipeline derives this from the floor/support plane;
 # synthetic tests pass it explicitly.
@@ -56,4 +57,46 @@ def extract_dimensions(points_m: np.ndarray, up: tuple[float, float, float] = UP
     """Full path: cloud -> oriented box -> normalized L/W/H -> integer mm."""
     box = oriented_box(points_m)
     length_m, width_m, height_m = normalize_axes_to_lwh(box.extents, box.axes, up)
+    return metres_to_dimensions(length_m, width_m, height_m)
+
+
+def segment_object_points(
+    points_m: np.ndarray,
+    plane: Plane,
+    up: np.ndarray,
+    *,
+    band_m: float = 0.01,
+    clip_percentile: float = 99.0,
+) -> np.ndarray:
+    """Keep points above the floor band; clip gross outliers by height percentile.
+
+    shortcut: percentile clip only — no radius/statistical outlier removal yet;
+    upgrade when real SAM 2 masks + Depth Pro clouds are benchmarked."""
+    p = np.asarray(points_m, dtype=float)
+    up = np.asarray(up, dtype=float)
+    # Distance measured along `up` (= +/- the plane normal), so "above" is positive.
+    height = point_plane_distance(p, plane) * np.sign(float(up @ plane.normal))
+    above = height > band_m
+    obj = p[above]
+    if obj.shape[0] == 0:
+        return obj
+    h = height[above]
+    cap = np.percentile(h, clip_percentile)
+    return obj[h <= cap]
+
+
+def extract_supported_dimensions(
+    points_m: np.ndarray,
+    plane: Plane,
+    up: np.ndarray,
+) -> Dimensions:
+    """L/W from the horizontal oriented-box extents; height = max distance of the
+    object points above the support plane (honest for a single-view base-on-floor
+    capture). Metres -> integer mm at the edge."""
+    obj = np.asarray(points_m, dtype=float)
+    if obj.shape[0] < 3:
+        raise ValueError("need >= 3 object points")
+    box = oriented_box(obj)
+    length_m, width_m, _ = normalize_axes_to_lwh(box.extents, box.axes, up)
+    height_m = float(point_plane_distance(obj, plane).__abs__().max())
     return metres_to_dimensions(length_m, width_m, height_m)

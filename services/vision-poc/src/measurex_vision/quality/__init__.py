@@ -1,3 +1,3 @@
-from .confidence import ConfidenceEstimator
+from .confidence import ConfidenceEstimator, HeuristicConfidenceEstimator
 
-__all__ = ["ConfidenceEstimator"]
+__all__ = ["ConfidenceEstimator", "HeuristicConfidenceEstimator"]
