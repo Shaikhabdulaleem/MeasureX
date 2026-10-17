@@ -42,14 +42,14 @@ def _run_image(args) -> int:
 
     if args.debug:
         # Build the cloud once; save artifacts; measure from the same cloud.
-        cloud = build_masked_cloud(image, **providers)
+        cloud = build_masked_cloud(image, **providers, release_models=args.low_memory)
         outcome = measure_from_cloud(cloud) if isinstance(cloud, MaskedCloud) else cloud
         payload = {"input": args.path, **outcome.to_dict()}
         out_dir = os.environ.get("MEASUREX_VISION_OUTPUT_DIR", "./outputs")
         if isinstance(cloud, MaskedCloud):
             _save_debug_artifacts(out_dir, image, cloud, payload)
     else:
-        outcome = build_measurement(image, **providers)
+        outcome = build_measurement(image, **providers, release_models=args.low_memory)
         payload = {"input": args.path, **outcome.to_dict()}
 
     print(json.dumps(payload, indent=2))
@@ -84,6 +84,7 @@ def _run_video(args) -> int:
         detector=get_detector(args.detector),
         segmenter=get_segmenter(args.segmenter, **seg_cfg),
         depth=get_depth_estimator(args.provider, checkpoint_path=args.checkpoint),
+        release_models=args.low_memory,
     )
     payload = {"input": args.path, "capture_type": "video", **outcome.to_dict()}
     if args.debug:
@@ -110,6 +111,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_image.add_argument("--provider", default="depth_pro", help="depth provider (default: depth_pro)")
     p_image.add_argument("--checkpoint", default=None, help="model checkpoint path (else env/default)")
     p_image.add_argument("--debug", action="store_true", help="save debug artifacts")
+    p_image.add_argument("--low-memory", action="store_true", help="free each model after its stage (small GPUs)")
 
     p_video = sub.add_parser("video", help="stabilized measurement from a short MP4/MOV video")
     p_video.add_argument("path", help="path to the video file")
@@ -119,6 +121,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_video.add_argument("--checkpoint", default=None, help="model checkpoint path (else env/default)")
     p_video.add_argument("--max-frames", type=int, default=8, help="frames to sample (default: 8)")
     p_video.add_argument("--debug", action="store_true", help="save measurement.json")
+    p_video.add_argument("--low-memory", action="store_true", help="free each model after its stage (small GPUs)")
 
     return parser
 

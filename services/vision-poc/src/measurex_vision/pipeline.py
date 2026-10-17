@@ -51,14 +51,25 @@ class MaskedCloud:
 MaskedCloudResult = MaskedCloud | MeasurementFailure
 
 
+def _release(provider: object) -> None:
+    """Free a provider's model if it supports it (low-memory mode)."""
+    release = getattr(provider, "release", None)
+    if callable(release):
+        release()
+
+
 def build_masked_cloud(
     image: np.ndarray,
     *,
     detector: Detector,
     segmenter: Segmenter,
     depth: DepthEstimator,
+    release_models: bool = False,
 ) -> MaskedCloudResult:
-    """Run the M2 pipeline; return a MaskedCloud or a typed MeasurementFailure."""
+    """Run the M2 pipeline; return a MaskedCloud or a typed MeasurementFailure.
+
+    ``release_models`` frees each model right after its stage so only one lives at
+    a time — needed to fit GDINO + SAM 2 + Depth Pro on a small GPU."""
     from .contracts import FailureCode
 
     stage_started = perf_counter()
@@ -68,10 +79,14 @@ def build_masked_cloud(
         return MeasurementFailure(failure_code=FailureCode.MULTIPLE_TARGETS)
     if kind == "none" or target is None:
         return MeasurementFailure(failure_code=FailureCode.NO_TARGET)
+    if release_models:
+        _release(detector)
     detection_ms = (perf_counter() - stage_started) * 1000.0
 
     stage_started = perf_counter()
     mask = segmenter.segment(image, target.bbox_xyxy)
+    if release_models:
+        _release(segmenter)
     gate = validate_mask(mask)
     if gate is not None:
         return MeasurementFailure(failure_code=gate)
@@ -79,6 +94,8 @@ def build_masked_cloud(
 
     stage_started = perf_counter()
     depth_result = depth.estimate(image)
+    if release_models:
+        _release(depth)
     depth_ms = (perf_counter() - stage_started) * 1000.0
     stage_started = perf_counter()
     h, w = depth_result.depth_m.shape
@@ -122,10 +139,13 @@ def build_measurement(
     segmenter: Segmenter,
     depth: DepthEstimator,
     confidence: ConfidenceEstimator | None = None,
+    release_models: bool = False,
 ) -> MeasurementResult:
     """Full M3 path: masked cloud -> support plane -> object -> L/W/H + confidence."""
     started = perf_counter()
-    cloud = build_masked_cloud(image, detector=detector, segmenter=segmenter, depth=depth)
+    cloud = build_masked_cloud(
+        image, detector=detector, segmenter=segmenter, depth=depth, release_models=release_models
+    )
     if isinstance(cloud, MeasurementFailure):
         return cloud
     outcome = measure_from_cloud(cloud, confidence=confidence)
@@ -269,6 +289,7 @@ def build_measurement_video(
     depth: DepthEstimator,
     stabilizer: TemporalStabilizer | None = None,
     confidence: ConfidenceEstimator | None = None,
+    release_models: bool = False,
 ) -> MeasurementResult:
     """Measure each frame (M3) then temporally stabilize."""
     from .contracts import FailureCode
@@ -278,7 +299,12 @@ def build_measurement_video(
     started = perf_counter()
     results = [
         build_measurement(
-            f, detector=detector, segmenter=segmenter, depth=depth, confidence=confidence
+            f,
+            detector=detector,
+            segmenter=segmenter,
+            depth=depth,
+            confidence=confidence,
+            release_models=release_models,
         )
         for f in frames
     ]

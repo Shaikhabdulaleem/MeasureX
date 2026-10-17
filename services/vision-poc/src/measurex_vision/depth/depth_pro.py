@@ -70,3 +70,11 @@ class DepthProEstimator(DepthEstimator):
             valid_ratio=valid_ratio,
             version=version,
         )
+
+    def release(self) -> None:
+        """Drop the loaded model to free RAM/VRAM (low-memory pipeline mode)."""
+        from .._memory import free_torch_memory
+
+        self._model = None
+        self._transform = None
+        free_torch_memory()

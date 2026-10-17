@@ -46,3 +46,10 @@ class Sam2Segmenter(Segmenter):
         # masks: (1, H, W) for a single box; take the best.
         best = int(np.argmax(scores))
         return np.asarray(masks[best], dtype=bool)
+
+    def release(self) -> None:
+        """Drop the loaded model to free RAM/VRAM (low-memory pipeline mode)."""
+        from .._memory import free_torch_memory
+
+        self._predictor = None
+        free_torch_memory()

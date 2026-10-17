@@ -93,3 +93,11 @@ class GroundingDinoDetector(Detector):
         if not detections:
             raise ValueError("no detections to select from")
         return max(detections, key=lambda d: d.score)
+
+    def release(self) -> None:
+        """Drop the loaded model to free RAM/VRAM (low-memory pipeline mode)."""
+        from .._memory import free_torch_memory
+
+        self._model = None
+        self._processor = None
+        free_torch_memory()

@@ -51,3 +51,20 @@ def test_single_target_proceeds(mock_estimator):
         image, detector=FakeDetector(dets), segmenter=BoxMaskSegmenter(), depth=mock_estimator
     )
     assert isinstance(out, MaskedCloud)
+
+
+class ReleasableDetector(FakeDetector):
+    released = False
+
+    def release(self):
+        self.released = True
+
+
+def test_release_models_frees_the_model(mock_estimator):
+    image = np.zeros((60, 80, 3), dtype=np.uint8)
+    det = ReleasableDetector([_det((5, 5, 70, 55), 0.90)])
+    out = build_masked_cloud(
+        image, detector=det, segmenter=BoxMaskSegmenter(), depth=mock_estimator, release_models=True
+    )
+    assert isinstance(out, MaskedCloud)
+    assert det.released is True
