@@ -47,6 +47,11 @@ measurex-vision = "measurex_vision.cli:main"
 [tool.hatch.build.targets.wheel]
 packages = ["src/measurex_vision"]
 
+# The `depth` extra installs depth_pro straight from Apple's git repo (no PyPI
+# release), which is a direct reference — hatchling requires this opt-in.
+[tool.hatch.metadata]
+allow-direct-references = true
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"
