@@ -27,9 +27,18 @@ vision = [
     "open3d>=0.18",
     "pyyaml>=6",
 ]
+# Depth model stack (torch + Apple depth_pro). GPU-oriented; targets Python
+# 3.11/3.12, not 3.14. Un-pinned beyond lower bounds until adoption (MODELS.md).
+# Never installed in CI.
+depth = [
+    "torch>=2.2",
+    "pillow>=10",
+    "depth_pro @ git+https://github.com/apple/ml-depth-pro.git",
+]
 dev = [
     "pytest>=8",
     "ruff>=0.6",
+    "pillow>=10",
 ]
 
 [project.scripts]
