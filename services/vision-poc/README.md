@@ -14,19 +14,31 @@ Read first: [`docs/VISION_DECISION.md`](../../docs/VISION_DECISION.md),
 [`docs/VISION_BENCHMARK.md`](../../docs/VISION_BENCHMARK.md), and
 [`CLAUDE.md`](CLAUDE.md).
 
-## Status — Milestone 0 (scaffold)
+## Status — Milestone 1 (depth)
 
-Implemented: domain contracts, provider interfaces, pure geometry utilities, and
-synthetic point-cloud tests. **No AI models are integrated yet** and no weights
-are downloaded. The CLI parses but the measurement pipeline is not wired.
+M0 delivered the scaffold: domain contracts, provider interfaces, pure geometry,
+and synthetic point-cloud tests. **M1 adds the depth stage** behind the
+`DepthEstimator` interface plus depth debug artifacts. Detection, segmentation,
+point-cloud build and L/W/H are still later milestones, so `cli image` runs depth
+and emits depth diagnostics + artifacts — not a full measurement yet.
+
+Depth providers (both behind the interface, see `MODELS.md`):
+
+- **Depth Pro** — metric-depth baseline. Weights are **Apple-ASCL: research /
+  benchmark only, NOT for production**.
+- **Depth Anything V2** — commercial slot, _planned_ (raises `NotImplementedError`).
 
 ```
 src/measurex_vision/
   contracts.py            # Dimensions, Confidence, Diagnostics, Success, Failure
-  cli.py                  # `python -m measurex_vision.cli` (placeholder)
+  cli.py                  # `python -m measurex_vision.cli` (depth stage)
+  io/image_loader.py      # load JPG/PNG -> RGB ndarray
   detection/base.py       # Detector interface (+ Detection)
   segmentation/base.py    # Segmenter interface
   depth/base.py           # DepthEstimator interface (+ DepthResult)
+  depth/registry.py       # get_depth_estimator(name)
+  depth/depth_pro.py      # DepthProEstimator (lazy torch)
+  visualization/debug_export.py  # colorize_depth + save_depth_artifacts
   geometry/
     base.py               # GeometryEstimator interface
     intrinsics.py         # CameraIntrinsics + forward projection
@@ -50,16 +62,32 @@ python -m venv .venv
 pip install -e ".[dev]"
 ```
 
-Model/vision extras (OpenCV, Open3D, …) are declared under the `vision` extra
-and installed in later milestones, not now.
+The core install (NumPy only) plus the `dev` extra runs all of CI. The depth
+model stack is separate — see below.
+
+### Depth model (GPU workstation)
+
+Real depth inference needs torch + a GPU and targets **Python 3.11/3.12** (not
+3.14). It is **not** part of CI. On a workstation:
+
+```bash
+pip install -e ".[depth]"          # torch + Apple depth_pro
+python scripts/download_models.py  # fetch Depth Pro checkpoint (Apple-ASCL, research only)
+```
+
+Weights are git-ignored and never committed. Read `MODELS.md` before downloading.
 
 ## Run
 
 ```bash
 python -m measurex_vision.cli --help
-python -m measurex_vision.cli image path/to/image.jpg --debug   # not implemented in M0
-python -m measurex_vision.cli video path/to/video.mp4 --debug   # not implemented in M0
+python -m measurex_vision.cli image path/to/image.jpg --debug   # depth stage + artifacts (needs the depth extra)
+python -m measurex_vision.cli video path/to/video.mp4 --debug   # not implemented yet
 ```
+
+With `--debug`, depth artifacts (original, coloured depth, raw/masked depth,
+`diagnostics.json`) are written under `outputs/` (override with
+`MEASUREX_VISION_OUTPUT_DIR`).
 
 ## Test
 

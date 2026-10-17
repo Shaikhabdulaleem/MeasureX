@@ -27,9 +27,18 @@ vision = [
     "open3d>=0.18",
     "pyyaml>=6",
 ]
+# Depth model stack (torch + Apple depth_pro). GPU-oriented; targets Python
+# 3.11/3.12, not 3.14. Un-pinned beyond lower bounds until adoption (MODELS.md).
+# Never installed in CI.
+depth = [
+    "torch>=2.2",
+    "pillow>=10",
+    "depth_pro @ git+https://github.com/apple/ml-depth-pro.git",
+]
 dev = [
     "pytest>=8",
     "ruff>=0.6",
+    "pillow>=10",
 ]
 
 [project.scripts]
@@ -37,6 +46,11 @@ measurex-vision = "measurex_vision.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/measurex_vision"]
+
+# The `depth` extra installs depth_pro straight from Apple's git repo (no PyPI
+# release), which is a direct reference — hatchling requires this opt-in.
+[tool.hatch.metadata]
+allow-direct-references = true
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
