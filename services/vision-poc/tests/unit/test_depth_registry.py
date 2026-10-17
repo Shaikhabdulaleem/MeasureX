@@ -15,9 +15,10 @@ def test_depth_pro_constructs_without_torch():
     assert type(estimator).__name__ == "DepthProEstimator"
 
 
-def test_commercial_slot_raises():
-    with pytest.raises(NotImplementedError):
-        get_depth_estimator("depth_anything_v2")
+def test_depth_anything_v2_constructs():
+    est = get_depth_estimator("depth_anything_v2")
+    assert isinstance(est, DepthEstimator)
+    assert type(est).__name__ == "DepthAnythingV2Estimator"
 
 
 def test_unknown_provider_raises():

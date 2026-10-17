@@ -13,15 +13,16 @@ Weights are never committed to this repository.
 
 | Field              | Depth Pro                                                     | Depth Anything V2 (metric)                                                        |
 | ------------------ | ------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| Role               | Metric depth — **POC/benchmark baseline**                     | Commercial slot — **planned, not implemented**                                    |
-| Code repo          | https://github.com/apple/ml-depth-pro                         | https://github.com/DepthAnything/Depth-Anything-V2                                |
-| Weights            | https://huggingface.co/apple/DepthPro                         | (to confirm at adoption)                                                          |
-| Version / commit   | checkpoint `depth_pro.pt` (record exact revision on download) | —                                                                                 |
-| Code license       | Apple sample-code license (see repo)                          | Apache-2.0 (to confirm per checkpoint)                                            |
-| **Weight license** | **Apple-ASCL — research only**                                | **to confirm** (metric checkpoints vary)                                          |
-| **Commercial use** | **NO**                                                        | TBD at adoption                                                                   |
-| Download source    | `scripts/download_models.py` → Hugging Face `apple/DepthPro`  | —                                                                                 |
-| Status             | Active (research/benchmark; **not for production**)           | Planned — `get_depth_estimator("depth_anything_v2")` raises `NotImplementedError` |
+| Role               | Metric depth — **POC/benchmark baseline**                     | Metric depth — **commercial-path, low memory**                                    |
+| Model / repo       | https://github.com/apple/ml-depth-pro                         | `depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf` (via transformers)      |
+| Weights            | https://huggingface.co/apple/DepthPro                         | Hugging Face (Metric Indoor Small)                                                 |
+| Version / commit   | checkpoint `depth_pro.pt` (record exact revision on download) | record HF revision on download                                                    |
+| Code license       | Apple sample-code license (see repo)                          | Apache-2.0                                                                         |
+| **Weight license** | **Apple-ASCL — research only**                                | **Apache-2.0** (confirm exact checkpoint + data provenance)                        |
+| **Commercial use** | **NO**                                                        | **YES** (confirm per checkpoint)                                                   |
+| PRODUCTION_ALLOWED | **false**                                                     | **pending** (confirm checkpoint; no focal prediction — uses an HFOV assumption)   |
+| Expected VRAM      | ~4–6 GB                                                        | ~1 GB (Small)                                                                      |
+| Status             | Active (research/benchmark; **not for production**)           | **Active** — `--provider depth_anything_v2` (Small)                               |
 
 ## Segmentation
 
