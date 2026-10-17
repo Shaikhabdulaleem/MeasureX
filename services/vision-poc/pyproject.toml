@@ -59,6 +59,11 @@ packages = ["src/measurex_vision"]
 [tool.hatch.metadata]
 allow-direct-references = true
 
+[tool.ruff]
+# Colab/Kaggle demo notebooks are docs, not shipped code — don't hold their
+# cells to library lint rules (shell magics, one-line imports, inline open()).
+extend-exclude = ["notebooks"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-q"

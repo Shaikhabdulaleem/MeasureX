@@ -79,9 +79,10 @@ python scripts/download_models.py  # fetch Depth Pro checkpoint (Apple-ASCL, res
 
 Weights are git-ignored and never committed. Read `MODELS.md` before downloading.
 
-No local GPU? Open [`notebooks/colab_vision_poc.ipynb`](notebooks/colab_vision_poc.ipynb)
-in Google Colab (GPU runtime) — it clones the repo, installs the stack, downloads
-weights, and runs a real photo/video + the benchmark end to end.
+No local GPU? Run it on a cloud GPU — it clones the repo, installs the stack,
+downloads weights, and runs a real photo/video + the benchmark end to end:
+- Google Colab (primary): [`notebooks/colab_vision_poc.ipynb`](notebooks/colab_vision_poc.ipynb) — GPU runtime.
+- Kaggle (alternative): [`notebooks/kaggle_vision_poc.ipynb`](notebooks/kaggle_vision_poc.ipynb) — GPU accelerator + Internet on.
 
 ## Run
 
