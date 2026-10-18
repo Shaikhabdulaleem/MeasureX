@@ -1,9 +1,11 @@
 # MeasureX Vision POC — Real GPU Validation Report
 
-> **STATUS: M8 accuracy gate FAILED.** First real end-to-end Kaggle carton run
-> completed the full pipeline but produced grossly wrong dimensions. Root cause
-> identified and the architecture fixed (see §16); a re-run is pending. **M8 has
-> not passed.** Sections still marked `____` await the re-run.
+> **STATUS: M8 accuracy gate FAILED.** Two real end-to-end Kaggle carton runs now
+> completed the full pipeline but both produced grossly wrong dimensions. The
+> second run (§17), after the support/object cloud separation fix (08ef2e3),
+> confirms the separation is structurally correct yet accuracy still fails badly.
+> A diagnostics-only patch (§18) was added to gather strong real-run evidence
+> before any further algorithm change. **M8 has not passed.**
 
 - **Date:** 2026-10-18 (first real run)
 - **Run by:** owner (Kaggle)
@@ -124,6 +126,58 @@ real EXIF/device intrinsics, before any further recommendation.
   trustworthy support candidate exists the engine returns the new typed failure
   `support_plane_not_found` instead of fabricating dimensions. No dimension was
   calibrated against the ground truth — GT is used for validation only.
+
+## 17. Second real run (after 08ef2e3 — support/object cloud separation)
+
+- **Date:** 2026-10-18 (second real run)  | **Environment:** Kaggle
+
+| Sample | Pred L | Pred W | Pred H | Confidence | Level | Runtime (s) | Success |
+|---|---|---|---|---|---|---|---|
+| image_002 | 1409 | 848 | 470 | 0.596 | LOW | ~14.18 | true (but wrong) |
+
+Diagnostics reported:
+- object_point_count_raw 343476, object_point_count 315043
+- support_candidate_point_count 389475, support_region_area_ratio 0.3170 (31.7%)
+- support_region_strategy bbox_apron
+- support_plane_inlier_ratio 0.6387 (63.9%)
+- intrinsics_source assumed, fx=fy 753.449, assumed_fov_deg 65.0
+
+Dimensional error vs GT (345 / 290 / 245 mm):
+
+| Dim | Pred | GT | Abs err (mm) | % err |
+|---|---|---|---|---|
+| Length | 1409 | 345 | 1064 | +308% |
+| Width | 848 | 290 | 558 | +192% |
+| Height | 470 | 245 | 225 | +92% |
+
+- CBM: pred 0.5616 m³, GT 0.0245 m³, abs err 0.5371, % err ~+2192%.
+- **Accuracy: still FAILED.** The support/object cloud separation is structurally
+  correct (a separate 389k-point support cloud was selected and the plane fitted
+  to it with a 63.9% inlier ratio), but the dimensions remain 2–4× too large.
+  Candidate causes not yet isolated: (A) wrong support plane, (B) depth scale,
+  (C) assumed intrinsics (65° FOV, no EXIF/device focal), (D) PCA/OBB axis or
+  outlier behaviour. The §18 diagnostics patch instruments all four.
+- GT 345/290/245 is recorded here as validation evidence only; no production
+  calculation reads it.
+
+## 18. Diagnostics-only patch (no measurement change)
+
+Added strong real-run diagnostics so the next decision is evidence-driven. The
+measurement algorithm is unchanged (dimensions, thresholds, FOV, RANSAC, support
+selector, PCA/OBB, depth scaling, detector prompt and confidence logic are all
+untouched). With `--debug`:
+
+- `support_region_overlay.png` — object/SAM region vs support-candidate region.
+- `support_plane_inliers_overlay.png` — RANSAC plane inliers vs support outliers
+  vs object pixels (pixel↔point correspondence retained).
+
+`measurement.json` now also carries: support plane normal/offset/inlier
+count+ratio; object and support depth percentiles (p01/p05/p50/p95/p99, plus
+object min/max); object-above-plane distance percentiles and max; raw OBB
+extents/axes, up vector, per-axis up-alignment, selected vertical axis index,
+horizontal extents and computed height before mm conversion; and image-space
+bbox/mask/size diagnostics. These describe the existing measurement; they do not
+alter it.
 
 ---
 Flutter integration does **not** start automatically — it requires explicit owner

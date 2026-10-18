@@ -118,7 +118,17 @@ def _run_image(args) -> int:
 
 
 def _save_debug_artifacts(out_dir: str, image, cloud, payload: dict) -> None:
-    from .visualization import save_cloud_artifacts, save_depth_artifacts
+    from PIL import Image
+
+    from .geometry import fit_plane_ransac
+    from .geometry.diagnostics import support_inlier_pixel_mask
+    from .pipeline import _MIN_SUPPORT_POINTS
+    from .visualization import (
+        overlay_support_plane_inliers,
+        overlay_support_region,
+        save_cloud_artifacts,
+        save_depth_artifacts,
+    )
 
     os.makedirs(out_dir, exist_ok=True)
     save_depth_artifacts(out_dir, image, cloud.depth, mask=cloud.mask)
@@ -126,6 +136,20 @@ def _save_debug_artifacts(out_dir: str, image, cloud, payload: dict) -> None:
         out_dir, image, cloud.mask, cloud.object_points_m,
         bbox_xyxy=cloud.detection.bbox_xyxy, diagnostics=cloud.diagnostics.to_dict(),
     )
+
+    if cloud.support_mask is not None:
+        Image.fromarray(
+            overlay_support_region(image, cloud.mask, cloud.support_mask)
+        ).save(os.path.join(out_dir, "support_region_overlay.png"))
+        if cloud.support_points_m.shape[0] >= _MIN_SUPPORT_POINTS:
+            # Deterministic refit (seed=0, support cloud only) == the plane
+            # measure_from_cloud fitted, so this overlay reflects the real run.
+            plane = fit_plane_ransac(cloud.support_points_m)
+            inliers = support_inlier_pixel_mask(cloud.depth.depth_m, cloud.support_mask, plane)
+            Image.fromarray(
+                overlay_support_plane_inliers(image, cloud.mask, cloud.support_mask, inliers)
+            ).save(os.path.join(out_dir, "support_plane_inliers_overlay.png"))
+
     with open(os.path.join(out_dir, "measurement.json"), "w", encoding="utf-8") as fh:
         json.dump(payload, fh, indent=2)
 

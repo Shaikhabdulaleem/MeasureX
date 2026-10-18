@@ -32,6 +32,7 @@ from .geometry import (
     resolve_intrinsics,
     segment_object_points,
 )
+from .geometry.diagnostics import geometry_diagnostics, image_space_diagnostics
 from .quality.confidence import ConfidenceEstimator, HeuristicConfidenceEstimator
 from .quality.mask_checks import validate_mask
 from .quality.support_region import support_region_mask
@@ -50,6 +51,7 @@ class MaskedCloud:
     mask: np.ndarray               # (H, W) bool — shipment mask
     detection: Detection
     depth: DepthResult
+    support_mask: np.ndarray | None = None  # (H, W) bool — support candidate pixels (debug overlays)
     diagnostics: Diagnostics = field(default_factory=Diagnostics)
     timing_ms: dict[str, float] = field(default_factory=dict)
 
@@ -170,6 +172,7 @@ def build_masked_cloud(
         mask=mask,
         detection=target,
         depth=depth_result,
+        support_mask=support_mask,
         diagnostics=diagnostics,
         timing_ms={
             "detection": detection_ms,
@@ -250,8 +253,10 @@ def measure_from_cloud(
     evidence = {
         **cloud.diagnostics.extra,
         "plane_inlier_ratio": support_inlier_ratio,  # confidence estimator reads this key
-        "support_plane_inlier_ratio": support_inlier_ratio,
         "object_point_count": int(obj.shape[0]),
+        # Read-only diagnostics describing (never altering) the measurement above.
+        **geometry_diagnostics(obj, cloud.support_points_m, plane, up),
+        **image_space_diagnostics(cloud.mask, cloud.detection.bbox_xyxy),
     }
     estimator = confidence or HeuristicConfidenceEstimator()
     conf = estimator.estimate(evidence)

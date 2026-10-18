@@ -118,6 +118,44 @@ def overlay_mask(
     return out
 
 
+def _blend(out: np.ndarray, region: np.ndarray, color: tuple[int, int, int]) -> None:
+    """Blend ``color`` at 50% over the ``region`` pixels of ``out`` in place."""
+    r = np.asarray(region, dtype=bool)
+    tint = np.array(color, dtype=np.uint8)
+    out[r] = (0.5 * out[r] + 0.5 * tint).astype(np.uint8)
+
+
+def overlay_support_region(
+    image: np.ndarray,
+    object_mask: np.ndarray,
+    support_mask: np.ndarray,
+) -> np.ndarray:
+    """A: original image with the object/SAM region (green) and support-candidate
+    region (orange) tinted so they are visually distinguishable."""
+    out = np.asarray(image, dtype=np.uint8).copy()
+    _blend(out, support_mask, (255, 140, 0))  # support candidates — orange
+    _blend(out, object_mask, (0, 255, 0))     # object/SAM region — green (on top)
+    return out
+
+
+def overlay_support_plane_inliers(
+    image: np.ndarray,
+    object_mask: np.ndarray,
+    support_mask: np.ndarray,
+    inlier_mask: np.ndarray,
+) -> np.ndarray:
+    """B: within the support region, RANSAC plane inliers (blue) vs support
+    outliers (red); object pixels in green. Distinguishes which support pixels
+    the floor plane was actually fitted to."""
+    out = np.asarray(image, dtype=np.uint8).copy()
+    sup = np.asarray(support_mask, dtype=bool)
+    inl = np.asarray(inlier_mask, dtype=bool)
+    _blend(out, sup & ~inl, (255, 0, 0))   # support candidate outliers — red
+    _blend(out, inl, (0, 80, 255))         # plane inliers — blue
+    _blend(out, object_mask, (0, 255, 0))  # object pixels — green
+    return out
+
+
 def save_cloud_artifacts(
     out_dir: str,
     image: np.ndarray,
