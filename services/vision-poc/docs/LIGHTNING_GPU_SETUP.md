@@ -34,13 +34,16 @@ GPU test.
 
 Everything below runs in the **Studio terminal**.
 
-## 1. Clone the repo and check out `main`
+## 1. Clone the repo and check out the M8 branch
+
+> **PR #20 (`m8-vision-consolidation`) is not merged yet**, so validate the M8
+> branch, not `main`. Once PR #20 merges, use `git checkout main` instead.
 
 ```bash
 cd ~
 git clone https://github.com/Shaikhabdulaleem/MeasureX.git
 cd MeasureX
-git checkout main
+git checkout m8-vision-consolidation
 cd services/vision-poc
 ```
 
@@ -245,7 +248,7 @@ From a fresh GPU Studio terminal (base environment, with its CUDA torch), with a
 
 ```bash
 git clone https://github.com/Shaikhabdulaleem/MeasureX.git
-cd MeasureX && git checkout main && cd services/vision-poc
+cd MeasureX && git checkout m8-vision-consolidation && cd services/vision-poc  # use main once PR #20 is merged
 pip install --upgrade pip && pip install -e ".[dev,seg,depth]"
 python -c "import cv2" 2>/dev/null || pip install "opencv-python-headless>=4.9"
 python - <<'PY'

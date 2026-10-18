@@ -76,7 +76,8 @@ MODEL_REGISTRY: dict[str, ModelMetadata] = {
         model_id="depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf",
         revision="8078d68a9c75a972131914f6afd0c1723be0da7f",  # pinned HF commit
         checkpoint="model.safetensors",
-        checkpoint_sha256="",  # pinned by HF revision; record on first download
+        # HF git-LFS SHA256 at the pinned revision (verified via the HF API).
+        checkpoint_sha256="e990eb82fbf11b05b7813261196a2b841bdcf5a05f64396724a8987fa90504a3",
         code_license="Apache-2.0",
         checkpoint_license="Apache-2.0",
         commercial_use=True,
@@ -90,7 +91,8 @@ MODEL_REGISTRY: dict[str, ModelMetadata] = {
         model_id="facebook/sam2.1-hiera-small",
         revision="ee5bba1d82bb8749febdf90f45e84b687142ba03",  # pinned HF commit
         checkpoint="sam2.1_hiera_small.pt",
-        checkpoint_sha256="",  # pinned by HF revision; record on first download
+        # HF git-LFS SHA256 at the pinned revision (verified via the HF API).
+        checkpoint_sha256="6d1aa6f30de5c92224f8172114de081d104bbd23dd9dc5c58996f0cad5dc4d38",
         code_license="Apache-2.0 (eval code BSD-3-Clause)",
         checkpoint_license="Apache-2.0",
         commercial_use=True,
@@ -105,7 +107,8 @@ MODEL_REGISTRY: dict[str, ModelMetadata] = {
         model_id="IDEA-Research/grounding-dino-tiny",
         revision="a2bb814dd30d776dcf7e30523b00659f4f141c71",  # pinned HF commit
         checkpoint="model.safetensors",
-        checkpoint_sha256="",  # pinned by HF revision; record on first download
+        # HF git-LFS SHA256 at the pinned revision (verified via the HF API).
+        checkpoint_sha256="1a2412ef99bd74bcd3c2a246fa1e48581f8889a1300c9051974741314fc042f3",
         code_license="Apache-2.0",
         checkpoint_license="Apache-2.0",
         commercial_use=True,

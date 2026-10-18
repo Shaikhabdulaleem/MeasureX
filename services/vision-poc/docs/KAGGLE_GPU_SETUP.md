@@ -33,17 +33,20 @@ no LiDAR / ARCore / ARKit.
 The T4 has ~15 GB VRAM — the whole stack fits comfortably with Depth Anything V2
 Small.
 
-## 1. Clone, check out `main`, install
+## 1. Clone, check out the M8 branch, install
 
 Use Kaggle's **base environment** — do **not** create a venv. The base image
 already ships a CUDA-enabled `torch`, `numpy` 2.x, `opencv`, `timm`, etc.; a venv
 would throw those away and force a slow, fragile reinstall. Kaggle's Python is
 currently **3.13**, which is fine (the package needs ≥ 3.11). Run in a cell:
 
+> **PR #20 (`m8-vision-consolidation`) is not merged yet** — check out the M8
+> branch, not `main`. Switch to `git checkout main` once PR #20 merges.
+
 ```python
 !git clone https://github.com/Shaikhabdulaleem/MeasureX.git /kaggle/working/MeasureX
 %cd /kaggle/working/MeasureX
-!git checkout main
+!git checkout m8-vision-consolidation
 %cd services/vision-poc
 !pip install -e ".[dev,seg,depth]"
 ```

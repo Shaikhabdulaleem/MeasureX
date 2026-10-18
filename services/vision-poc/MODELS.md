@@ -24,8 +24,11 @@ Weights are never committed to this repository.
 
 > **Revision pinning.** Production model revisions are **frozen** to the exact HF
 > commits below and passed into `from_pretrained(..., revision=...)`; production
-> execution never silently downloads an updated `main`. Record the checkpoint
-> SHA256 on first download.
+> execution never silently downloads an updated `main`. The checkpoint SHA256s
+> below are the Hugging Face git-LFS object hashes at each pinned revision,
+> verified independently via the HF API — `hf_hub_download(..., revision=...)`
+> re-verifies the LFS SHA256 on download, so a corrupted/substituted weight fails
+> fast. (Depth Pro is research-only and unpinned, so no SHA256 is stored.)
 
 ## Depth estimation
 
@@ -35,6 +38,7 @@ Weights are never committed to this repository.
 | Model / repo       | https://github.com/apple/ml-depth-pro                         | `depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf` (via transformers)      |
 | Weights            | https://huggingface.co/apple/DepthPro                         | Hugging Face (Metric Indoor Small)                                                 |
 | Version / commit   | checkpoint `depth_pro.pt` (research only — not pinned)        | **pinned** HF commit `8078d68a9c75a972131914f6afd0c1723be0da7f` (`model.safetensors`) |
+| Checkpoint SHA256  | not stored (research-only, unpinned)                          | `e990eb82fbf11b05b7813261196a2b841bdcf5a05f64396724a8987fa90504a3` |
 | Code license       | Apple sample-code license (see repo)                          | Apache-2.0                                                                         |
 | **Weight license** | **Apple-ASCL — research only**                                | **Apache-2.0**                                                                     |
 | **Commercial use** | **NO**                                                        | **YES**                                                                            |
@@ -53,8 +57,9 @@ Weights are never committed to this repository.
 | Field              | SAM 2                                                          |
 | ------------------ | -------------------------------------------------------------- |
 | Role               | Shipment segmentation (box → mask)                             |
-| Code repo          | https://github.com/facebookresearch/sam2                       |
+| Code repo          | https://github.com/facebookresearch/sam2 — **pinned** commit `2b90b9f5ceec907a1c18123530e92e794ad901a4` (frozen upstream HEAD, 2024-12-16; repo has no release tags). Installed via the `seg` extra. |
 | Model / weights    | HF `facebook/sam2.1-hiera-small`, **pinned** commit `ee5bba1d82bb8749febdf90f45e84b687142ba03`, checkpoint `sam2.1_hiera_small.pt` |
+| Checkpoint SHA256  | `6d1aa6f30de5c92224f8172114de081d104bbd23dd9dc5c58996f0cad5dc4d38` |
 | Code license       | Apache-2.0 (eval code BSD-3-Clause)                            |
 | **Weight license** | **Apache-2.0**                                                 |
 | **Commercial use** | **YES**                                                        |
@@ -68,6 +73,7 @@ Weights are never committed to this repository.
 | Role                   | Locate the shipment and hand SAM 2 a tight prompt box             |
 | Model                  | `IDEA-Research/grounding-dino-tiny` (via `transformers`)          |
 | Checkpoint source      | HF `IDEA-Research/grounding-dino-tiny`, **pinned** commit `a2bb814dd30d776dcf7e30523b00659f4f141c71` (`model.safetensors`) |
+| Checkpoint SHA256      | `1a2412ef99bd74bcd3c2a246fa1e48581f8889a1300c9051974741314fc042f3` |
 | Code repo              | https://github.com/IDEA-Research/GroundingDINO                    |
 | Code license           | Apache-2.0                                                        |
 | **Weight license**     | **Apache-2.0**                                                   |

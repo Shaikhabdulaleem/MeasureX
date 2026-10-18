@@ -9,7 +9,8 @@ weights the real stack uses are present or will auto-download.
 
 Nothing here imports the measurex_vision package or loads a model — it is safe to
 run before `pip install -e` finishes. Exit code is 0 when the real stack can run
-(torch + CUDA + required packages import), 1 otherwise.
+(torch + CUDA + required packages import, and the SAM 2 checkpoint + config are in
+place — SAM 2 has no auto-download), 1 otherwise.
 """
 
 from __future__ import annotations
@@ -85,8 +86,11 @@ def report() -> int:
 
     print("Model weights:")
     sam2_ckpt = os.environ.get("MEASUREX_SAM2_CHECKPOINT")
+    sam2_cfg = os.environ.get("MEASUREX_SAM2_CONFIG")
+    sam2_ckpt_ok = bool(sam2_ckpt) and os.path.exists(sam2_ckpt)
+    sam2_cfg_ok = _sam2_config_resolvable(sam2_cfg)
     print(f"  SAM 2 checkpoint   : {_weight_status(sam2_ckpt, 'set MEASUREX_SAM2_CHECKPOINT')}")
-    print(f"  SAM 2 config       : {_weight_status(os.environ.get('MEASUREX_SAM2_CONFIG'), 'set MEASUREX_SAM2_CONFIG')}")
+    print(f"  SAM 2 config       : {_sam2_config_status(sam2_cfg, sam2_cfg_ok)}")
     print("  Grounding DINO     : auto-downloads from Hugging Face on first run")
     print("  Depth Anything V2  : auto-downloads from Hugging Face on first run")
     depth_pro = os.environ.get("MEASUREX_DEPTH_CHECKPOINT") or os.path.join(
@@ -94,10 +98,48 @@ def report() -> int:
     )
     print(f"  Depth Pro (opt.)   : {_weight_status(depth_pro, 'optional, research only')}")
 
-    ready = torch_ok and cuda_available and not missing
+    ready = _is_ready(
+        torch_ok=torch_ok, cuda_available=cuda_available, missing=missing,
+        sam2_ckpt_ok=sam2_ckpt_ok, sam2_cfg_ok=sam2_cfg_ok,
+    )
     print()
-    print("READY: real stack can run." if ready else "NOT READY: see MISSING / CUDA above.")
+    print(
+        "READY: real stack can run."
+        if ready
+        else "NOT READY: see MISSING / CUDA / SAM 2 checkpoint/config above."
+    )
     return 0 if ready else 1
+
+
+def _is_ready(*, torch_ok: bool, cuda_available: bool, missing: list[str],
+              sam2_ckpt_ok: bool, sam2_cfg_ok: bool) -> bool:
+    """The real production stack can run only with CUDA, every required package,
+    and the SAM 2 checkpoint + config in place (SAM 2 has no auto-download)."""
+    return torch_ok and cuda_available and not missing and sam2_ckpt_ok and sam2_cfg_ok
+
+
+def _sam2_config_resolvable(cfg: str | None) -> bool:
+    """SAM 2 config is resolvable when set and either a real file on disk or
+    shipped inside the installed ``sam2`` package (``build_sam2`` resolves it
+    from there via Hydra, e.g. ``configs/sam2.1/sam2.1_hiera_s.yaml``)."""
+    if not cfg:
+        return False
+    if os.path.exists(cfg):
+        return True
+    try:
+        import sam2  # only reached when a config is set (CI never sets one)
+    except ImportError:
+        return False
+    return os.path.exists(os.path.join(os.path.dirname(sam2.__file__), cfg))
+
+
+def _sam2_config_status(cfg: str | None, resolvable: bool) -> str:
+    if not cfg:
+        return "not configured (set MEASUREX_SAM2_CONFIG)"
+    if resolvable:
+        suffix = "" if os.path.exists(cfg) else " (resolved from sam2 package)"
+        return f"present: {cfg}{suffix}"
+    return f"NOT RESOLVABLE: {cfg}"
 
 
 def _weight_status(path: str | None, hint: str) -> str:
@@ -113,6 +155,22 @@ def _self_check() -> int:
     assert _weight_status(None, "hint").startswith("not configured")
     assert _weight_status(__file__, "hint").startswith("present")
     assert _weight_status(__file__ + ".nope", "hint").startswith("MISSING")
+
+    # SAM 2 config resolution: an on-disk file resolves; an unset/absent one does not.
+    assert _sam2_config_resolvable(__file__) is True
+    assert _sam2_config_resolvable(None) is False
+    assert _sam2_config_resolvable("configs/does_not_exist.yaml") is False
+
+    # READY gate: everything present passes; dropping any single requirement fails.
+    ready_kwargs = {
+        "torch_ok": True, "cuda_available": True, "missing": [],
+        "sam2_ckpt_ok": True, "sam2_cfg_ok": True,
+    }
+    assert _is_ready(**ready_kwargs) is True
+    assert _is_ready(**{**ready_kwargs, "cuda_available": False}) is False
+    assert _is_ready(**{**ready_kwargs, "missing": ["sam2"]}) is False
+    assert _is_ready(**{**ready_kwargs, "sam2_ckpt_ok": False}) is False
+    assert _is_ready(**{**ready_kwargs, "sam2_cfg_ok": False}) is False
     print("self-check OK")
     return 0
 
