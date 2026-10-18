@@ -72,9 +72,11 @@ errors, or a "compiled against numpy 2.x" warning on `import torch`), restore it
 > matched pair; reinstalling one (e.g. a `--index-url .../cu121` torch install)
 > desyncs them and `transformers` then fails to import with
 > `RuntimeError: operator torchvision::nms does not exist`. If that happens,
-> reinstall the matching pair from one index, e.g.
-> `!pip install "torch==2.5.1" "torchvision==0.20.1" --index-url https://download.pytorch.org/whl/cu121`
-> (torchvision 0.20.1 matches torch 2.5.1 — pick the match for your torch).
+> reinstall **both together from one index** so pip picks a matched pair — restore
+> Kaggle's shipped cu128 pair:
+> `!pip install --force-reinstall "torch==2.11.0" "torchvision==0.26.0" --index-url https://download.pytorch.org/whl/cu128`
+> (use whatever matched versions your image shipped; the point is one index, both
+> packages, same command).
 
 ## 2. Weights
 

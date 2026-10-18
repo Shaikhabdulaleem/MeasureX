@@ -92,10 +92,11 @@ pip install --force-reinstall torch torchvision --index-url https://download.pyt
 ```
 
 > Never reinstall `torch` alone on a hosted base image: it desyncs the
-> preinstalled `torchvision`. If you already did, install the matching pair, e.g.
-> `pip install "torch==2.5.1" "torchvision==0.20.1" --index-url https://download.pytorch.org/whl/cu121`
-> (torchvision 0.20.1 matches torch 2.5.1; pick the matching torchvision for your
-> torch version).
+> preinstalled `torchvision`. If you already did, reinstall **both together from
+> one index** so pip picks a matched pair, e.g.
+> `pip install --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu121`
+> (or restore the exact versions your image shipped — the rule is one index, both
+> packages, same command).
 
 ## 5. Download the approved weights
 
