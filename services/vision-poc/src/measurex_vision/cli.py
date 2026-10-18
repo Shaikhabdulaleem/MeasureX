@@ -14,13 +14,29 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import sys
 
 from . import __version__
+from .models import PRODUCTION_STACK, get_metadata
 
 
-def _detector_cfg(args) -> dict:
+def _detector_name(args) -> str:
+    """Resolve the detector. ``--production`` defaults to the approved proposer
+    (Grounding DINO), never the model-free central_candidate fallback."""
+    if args.detector:
+        return args.detector
+    return PRODUCTION_STACK["detector"] if args.production else "central_candidate"
+
+
+def _segmenter_name(args) -> str:
+    """Resolve the segmenter. SAM 2 is the default in every mode; box_mask is a
+    synthetic/test aid only and is never defaulted to."""
+    return args.segmenter or PRODUCTION_STACK["segmenter"]
+
+
+def _detector_cfg(args, detector: str) -> dict:
     """Grounding DINO tuning knobs; empty for the model-free detector."""
-    if args.detector != "grounding_dino":
+    if detector != "grounding_dino":
         return {}
     cfg = {"box_threshold": args.box_threshold}
     if args.prompt:
@@ -32,7 +48,27 @@ def _depth_provider(args) -> str:
     """Resolve the depth provider: no production-safe default selects Depth Pro."""
     if args.provider:
         return args.provider
-    return "depth_anything_v2" if args.production else "depth_pro"
+    return PRODUCTION_STACK["depth"] if args.production else "depth_pro"
+
+
+def _print_resolved(detector: str, segmenter: str, depth: str, production: bool) -> None:
+    """Print the resolved stack (with pinned revisions) before inference.
+
+    Goes to stderr so the measurement JSON on stdout stays machine-parseable."""
+    def rev(key: str) -> str:
+        try:
+            return get_metadata(key).revision
+        except ValueError:
+            return "unknown"
+
+    print(
+        "resolved providers:\n"
+        f"  detector : {detector} (rev {rev(detector)})\n"
+        f"  segmenter: {segmenter} (rev {rev(segmenter)})\n"
+        f"  depth    : {depth} (rev {rev(depth)})\n"
+        f"  production mode: {production}",
+        file=sys.stderr,
+    )
 
 
 def _run_image(args) -> int:
@@ -49,13 +85,15 @@ def _run_image(args) -> int:
     from .segmentation import get_segmenter
 
     image = load_image(args.path)
+    detector, segmenter, depth = _detector_name(args), _segmenter_name(args), _depth_provider(args)
+    _print_resolved(detector, segmenter, depth, args.production)
     # Only model-backed providers take a checkpoint; box_mask is model-free.
-    seg_cfg = {"checkpoint_path": args.checkpoint} if args.segmenter != "box_mask" else {}
+    seg_cfg = {"checkpoint_path": args.checkpoint} if segmenter != "box_mask" else {}
     providers = {
-        "detector": get_detector(args.detector, production=args.production, **_detector_cfg(args)),
-        "segmenter": get_segmenter(args.segmenter, production=args.production, **seg_cfg),
+        "detector": get_detector(detector, production=args.production, **_detector_cfg(args, detector)),
+        "segmenter": get_segmenter(segmenter, production=args.production, **seg_cfg),
         "depth": get_depth_estimator(
-            _depth_provider(args), production=args.production, checkpoint_path=args.checkpoint
+            depth, production=args.production, checkpoint_path=args.checkpoint
         ),
     }
     intr = {
@@ -101,13 +139,15 @@ def _run_video(args) -> int:
     from .segmentation import get_segmenter
 
     frames = sample_frames(args.path, max_frames=args.max_frames)
-    seg_cfg = {"checkpoint_path": args.checkpoint} if args.segmenter != "box_mask" else {}
+    detector, segmenter, depth = _detector_name(args), _segmenter_name(args), _depth_provider(args)
+    _print_resolved(detector, segmenter, depth, args.production)
+    seg_cfg = {"checkpoint_path": args.checkpoint} if segmenter != "box_mask" else {}
     outcome = build_measurement_video(
         frames,
-        detector=get_detector(args.detector, production=args.production, **_detector_cfg(args)),
-        segmenter=get_segmenter(args.segmenter, production=args.production, **seg_cfg),
+        detector=get_detector(detector, production=args.production, **_detector_cfg(args, detector)),
+        segmenter=get_segmenter(segmenter, production=args.production, **seg_cfg),
         depth=get_depth_estimator(
-            _depth_provider(args), production=args.production, checkpoint_path=args.checkpoint
+            depth, production=args.production, checkpoint_path=args.checkpoint
         ),
         fallback_fov_deg=args.fov_deg,
         release_models=args.low_memory,
@@ -132,11 +172,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_image = sub.add_parser("image", help="single-image L/W/H measurement")
     p_image.add_argument("path", help="path to the image file")
-    p_image.add_argument("--detector", default="central_candidate", help="detector (default: central_candidate)")
-    p_image.add_argument("--segmenter", default="sam2", help="segmenter (default: sam2)")
+    p_image.add_argument("--detector", default=None, help="detector (default: central_candidate; grounding_dino with --production)")
+    p_image.add_argument("--segmenter", default=None, help="segmenter (default: sam2)")
     p_image.add_argument("--provider", default=None, help="depth provider (default: depth_pro, or depth_anything_v2 with --production)")
     p_image.add_argument("--checkpoint", default=None, help="model checkpoint path (else env/default)")
-    p_image.add_argument("--production", action="store_true", help="refuse non-production-allowed models (e.g. Depth Pro)")
+    p_image.add_argument("--production", action="store_true", help="resolve the approved production stack (GDINO/SAM2/DA-V2) and refuse any non-production-approved model")
     p_image.add_argument("--fov-deg", type=float, default=None, help="fallback horizontal FOV when focal is unknown")
     p_image.add_argument("--debug", action="store_true", help="save debug artifacts")
     p_image.add_argument("--low-memory", action="store_true", help="free each model after its stage (small GPUs)")
@@ -145,11 +185,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_video = sub.add_parser("video", help="stabilized measurement from a short MP4/MOV video")
     p_video.add_argument("path", help="path to the video file")
-    p_video.add_argument("--detector", default="central_candidate", help="detector (default: central_candidate)")
-    p_video.add_argument("--segmenter", default="sam2", help="segmenter (default: sam2)")
+    p_video.add_argument("--detector", default=None, help="detector (default: central_candidate; grounding_dino with --production)")
+    p_video.add_argument("--segmenter", default=None, help="segmenter (default: sam2)")
     p_video.add_argument("--provider", default=None, help="depth provider (default: depth_pro, or depth_anything_v2 with --production)")
     p_video.add_argument("--checkpoint", default=None, help="model checkpoint path (else env/default)")
-    p_video.add_argument("--production", action="store_true", help="refuse non-production-allowed models (e.g. Depth Pro)")
+    p_video.add_argument("--production", action="store_true", help="resolve the approved production stack (GDINO/SAM2/DA-V2) and refuse any non-production-approved model")
     p_video.add_argument("--fov-deg", type=float, default=None, help="fallback horizontal FOV when focal is unknown")
     p_video.add_argument("--max-frames", type=int, default=8, help="frames to sample (default: 8)")
     p_video.add_argument("--debug", action="store_true", help="save measurement.json")

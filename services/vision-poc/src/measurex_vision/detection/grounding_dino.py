@@ -10,22 +10,41 @@ from __future__ import annotations
 
 import numpy as np
 
+from ..models import get_metadata
 from .base import Detection, Detector
 
 # Lowercase, period-separated, trailing period (required by Grounding DINO).
 DEFAULT_PROMPT = "box. carton. parcel. package. pallet. shipment."
 
+_META = get_metadata("grounding_dino")
+
+
+def _select_labels(results: dict, count: int) -> list:
+    """Pick per-detection labels across Transformers versions.
+
+    Transformers >= 4.51 returns ``text_labels`` (list[str]); older versions
+    return ``labels`` (list[str], or a tensor of class ids). Prefer
+    ``text_labels``, then ``labels``. Never apply a boolean ``or`` to the value —
+    it may be a tensor, whose truth value is ambiguous and raises."""
+    for key in ("text_labels", "labels"):
+        val = results.get(key)
+        if val is not None:
+            return list(val)
+    return ["object"] * count
+
 
 class GroundingDinoDetector(Detector):
     def __init__(
         self,
-        model_id: str = "IDEA-Research/grounding-dino-tiny",
+        model_id: str = _META.model_id,
         prompt: str = DEFAULT_PROMPT,
         box_threshold: float = 0.35,
         text_threshold: float = 0.25,
         device: str = "auto",
+        revision: str = _META.revision,  # pinned HF commit — no silent main download
     ) -> None:
         self.model_id = model_id
+        self.revision = revision
         self.prompt = prompt
         self.box_threshold = box_threshold
         self.text_threshold = text_threshold
@@ -52,10 +71,10 @@ class GroundingDinoDetector(Detector):
         from transformers import AutoModelForZeroShotObjectDetection, AutoProcessor
 
         self._device = self._resolve_device()
-        self._processor = AutoProcessor.from_pretrained(self.model_id)
-        self._model = AutoModelForZeroShotObjectDetection.from_pretrained(self.model_id).to(
-            self._device
-        )
+        self._processor = AutoProcessor.from_pretrained(self.model_id, revision=self.revision)
+        self._model = AutoModelForZeroShotObjectDetection.from_pretrained(
+            self.model_id, revision=self.revision
+        ).to(self._device)
         self._torch = torch
 
     def detect(self, image: np.ndarray) -> list[Detection]:
@@ -76,8 +95,9 @@ class GroundingDinoDetector(Detector):
             results = post(outputs, inputs["input_ids"], box_threshold=self.box_threshold, **kwargs)[0]
 
         detections: list[Detection] = []
-        labels = results.get("labels") or results.get("text_labels") or []
-        for box, score, label in zip(results["boxes"], results["scores"], labels):
+        boxes = results["boxes"]
+        labels = _select_labels(results, len(boxes))
+        for box, score, label in zip(boxes, results["scores"], labels):
             x0, y0, x1, y1 = (float(v) for v in box.tolist())
             detections.append(
                 Detection(

@@ -16,18 +16,23 @@ import math
 
 import numpy as np
 
+from ..models import get_metadata
 from .base import DepthEstimator, DepthResult
+
+_META = get_metadata("depth_anything_v2")
 
 
 class DepthAnythingV2Estimator(DepthEstimator):
     def __init__(
         self,
-        model_id: str = "depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf",
+        model_id: str = _META.model_id,
         hfov_deg: float = 65.0,
         device: str = "auto",
         checkpoint_path: str | None = None,  # accepted for CLI parity; unused (HF model_id)
+        revision: str = _META.revision,  # pinned HF commit — no silent main download
     ) -> None:
         self.model_id = model_id
+        self.revision = revision
         self.hfov_deg = hfov_deg
         self.device = device
         self._model = None
@@ -48,8 +53,10 @@ class DepthAnythingV2Estimator(DepthEstimator):
         from transformers import AutoImageProcessor, AutoModelForDepthEstimation
 
         self._device = self._resolve_device()
-        self._processor = AutoImageProcessor.from_pretrained(self.model_id)
-        self._model = AutoModelForDepthEstimation.from_pretrained(self.model_id).to(self._device)
+        self._processor = AutoImageProcessor.from_pretrained(self.model_id, revision=self.revision)
+        self._model = AutoModelForDepthEstimation.from_pretrained(
+            self.model_id, revision=self.revision
+        ).to(self._device)
         self._torch = torch
 
     def estimate(self, image: np.ndarray) -> DepthResult:
@@ -79,7 +86,7 @@ class DepthAnythingV2Estimator(DepthEstimator):
             depth_m=depth_m,
             focal_px=focal_px,
             valid_ratio=valid_ratio,
-            version=f"{self.model_id} (hfov={self.hfov_deg}deg)",
+            version=f"{self.model_id}@{self.revision[:12]} (hfov={self.hfov_deg}deg)",
             focal_is_assumed=True,  # focal comes from an assumed FOV, not prediction
         )
 

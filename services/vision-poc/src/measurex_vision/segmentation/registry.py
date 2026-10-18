@@ -11,9 +11,9 @@ KNOWN_SEGMENTERS = ("box_mask", "sam2")
 
 def get_segmenter(name: str, *, production: bool = False, **cfg: Any) -> Segmenter:
     if production:
-        from ..models import assert_production_allowed
+        from ..models import assert_production_approved
 
-        assert_production_allowed(name)
+        assert_production_approved(name)
     if name == "box_mask":
         from .box_mask import BoxMaskSegmenter
 

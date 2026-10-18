@@ -86,7 +86,9 @@ V2 Small auto-download from Hugging Face on first run.
 ```python
 import os
 from huggingface_hub import hf_hub_download
+# Pinned revision — must match MODELS.md / models.py (no silent main download).
 ckpt = hf_hub_download("facebook/sam2.1-hiera-small", "sam2.1_hiera_small.pt",
+                       revision="ee5bba1d82bb8749febdf90f45e84b687142ba03",
                        local_dir="/kaggle/working/weights")
 os.environ["MEASUREX_SAM2_CHECKPOINT"] = ckpt
 os.environ["MEASUREX_SAM2_CONFIG"] = "configs/sam2.1/sam2.1_hiera_s.yaml"
@@ -120,13 +122,16 @@ writable working tree:
 
 ## 5. Image + video measurement
 
+Validate with **`--production`** — it resolves the approved stack (Grounding DINO
+→ SAM 2 → Depth Anything V2 Metric Indoor Small, pinned revisions), refuses
+`central_candidate` / `box_mask` / `depth_pro`, and prints the resolved providers
+and revisions to stderr first, so you cannot validate while bypassing the gate.
+
 ```python
 %cd /kaggle/working/MeasureX/services/vision-poc
-!python -m measurex_vision.cli image data/samples/box.jpg \
-  --detector grounding_dino --segmenter sam2 --provider depth_anything_v2 --debug
+!python -m measurex_vision.cli image data/samples/box.jpg --production --debug
 
-!python -m measurex_vision.cli video data/samples/box.mp4 \
-  --detector grounding_dino --segmenter sam2 --provider depth_anything_v2 \
+!python -m measurex_vision.cli video data/samples/box.mp4 --production \
   --max-frames 8 --debug
 ```
 

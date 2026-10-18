@@ -111,7 +111,9 @@ the checkpoint and its matching config (the config ships inside the installed
 mkdir -p weights
 python - <<'PY'
 from huggingface_hub import hf_hub_download
+# Pinned revision — must match MODELS.md / models.py (no silent main download).
 p = hf_hub_download("facebook/sam2.1-hiera-small", "sam2.1_hiera_small.pt",
+                    revision="ee5bba1d82bb8749febdf90f45e84b687142ba03",
                     local_dir="weights")
 print("SAM 2 checkpoint:", p)
 PY
@@ -164,10 +166,14 @@ ls data/samples
 
 ## 9. Run a real IMAGE measurement
 
+Validate with **`--production`** — it resolves the approved stack (Grounding DINO
+→ SAM 2 → Depth Anything V2 Metric Indoor Small, pinned revisions) and refuses
+`central_candidate` / `box_mask` / `depth_pro`, so you cannot accidentally
+validate while bypassing the production model gate. It prints the resolved
+providers and revisions to stderr before inference.
+
 ```bash
-python -m measurex_vision.cli image data/samples/box.jpg \
-  --detector grounding_dino --segmenter sam2 --provider depth_anything_v2 \
-  --debug
+python -m measurex_vision.cli image data/samples/box.jpg --production --debug
 ```
 
 The printed JSON (and `outputs/measurement.json`) contains:
@@ -184,8 +190,7 @@ dimensions — that is correct behaviour, not an error.
 ## 10. Run a real VIDEO measurement (temporal stabilization)
 
 ```bash
-python -m measurex_vision.cli video data/samples/box.mp4 \
-  --detector grounding_dino --segmenter sam2 --provider depth_anything_v2 \
+python -m measurex_vision.cli video data/samples/box.mp4 --production \
   --max-frames 8 --debug
 ```
 
@@ -245,14 +250,14 @@ pip install --upgrade pip && pip install -e ".[dev,seg,depth]"
 python -c "import cv2" 2>/dev/null || pip install "opencv-python-headless>=4.9"
 python - <<'PY'
 from huggingface_hub import hf_hub_download
-hf_hub_download("facebook/sam2.1-hiera-small", "sam2.1_hiera_small.pt", local_dir="weights")
+hf_hub_download("facebook/sam2.1-hiera-small", "sam2.1_hiera_small.pt",
+                revision="ee5bba1d82bb8749febdf90f45e84b687142ba03", local_dir="weights")
 PY
 export MEASUREX_SAM2_CHECKPOINT="$PWD/weights/sam2.1_hiera_small.pt"
 export MEASUREX_SAM2_CONFIG="configs/sam2.1/sam2.1_hiera_s.yaml"
 python scripts/check_gpu_environment.py            # expect READY
 mkdir -p data/samples                              # drag box.jpg into data/samples/
-python -m measurex_vision.cli image data/samples/box.jpg \
-  --detector grounding_dino --segmenter sam2 --provider depth_anything_v2 --debug
+python -m measurex_vision.cli image data/samples/box.jpg --production --debug
 ```
 
 The last command prints your first real MeasureX L/W/H (in `dimensions`), with

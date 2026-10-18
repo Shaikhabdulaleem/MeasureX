@@ -15,9 +15,9 @@ KNOWN_PROVIDERS = ("depth_pro", "depth_anything_v2")
 
 def get_depth_estimator(name: str, *, production: bool = False, **cfg: Any) -> DepthEstimator:
     if production:
-        from ..models import assert_production_allowed
+        from ..models import assert_production_approved
 
-        assert_production_allowed(name)
+        assert_production_approved(name)
     if name == "depth_pro":
         from .depth_pro import DepthProEstimator
 
