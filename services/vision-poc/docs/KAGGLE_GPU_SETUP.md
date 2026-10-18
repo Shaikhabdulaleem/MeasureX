@@ -62,6 +62,12 @@ errors, or a "compiled against numpy 2.x" warning on `import torch`), restore it
 !pip install -U "numpy>=2"
 ```
 
+> **Working directory:** Kaggle resets the shell's cwd to `/kaggle/working` if the
+> kernel restarts between cells, so `!python scripts/...` can fail with
+> `No such file or directory`. Start every cell that runs a relative command with
+> `%cd /kaggle/working/MeasureX/services/vision-poc` (shown below) so the cell is
+> self-contained.
+
 ## 2. Weights
 
 Same as Lightning. SAM 2 is a manual download; Grounding DINO and Depth Anything
@@ -82,6 +88,7 @@ Depth Pro (optional, research only, Apple-ASCL, **not for production**):
 ## 3. Verify GPU + sanity check
 
 ```python
+%cd /kaggle/working/MeasureX/services/vision-poc
 !nvidia-smi
 import torch; print("cuda:", torch.cuda.is_available())
 !python scripts/check_gpu_environment.py        # expect READY
@@ -95,6 +102,7 @@ dataset (Notebook sidebar → **Add Input → Upload**), then copy them into the
 writable working tree:
 
 ```python
+%cd /kaggle/working/MeasureX/services/vision-poc
 !mkdir -p data/samples
 !cp /kaggle/input/<your-dataset>/box.jpg data/samples/
 !cp /kaggle/input/<your-dataset>/box.mp4 data/samples/
@@ -103,6 +111,7 @@ writable working tree:
 ## 5. Image + video measurement
 
 ```python
+%cd /kaggle/working/MeasureX/services/vision-poc
 !python -m measurex_vision.cli image data/samples/box.jpg \
   --detector grounding_dino --segmenter sam2 --provider depth_anything_v2 --debug
 
@@ -128,6 +137,7 @@ measurement overlay; do not modify the engine to split it.
 ## 7. M5 benchmark
 
 ```python
+%cd /kaggle/working/MeasureX/services/vision-poc
 !python scripts/benchmark.py data/benchmark/manifest.csv \
   --detector grounding_dino --segmenter sam2 --provider depth_anything_v2 \
   --false-success-tolerance-pct 10 --output-dir outputs/benchmark
