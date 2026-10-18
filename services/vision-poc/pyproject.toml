@@ -57,6 +57,11 @@ dev = [
 [project.scripts]
 measurex-vision = "measurex_vision.cli:main"
 
+[tool.ruff]
+# Notebooks are GPU-validation scaffolding, not linted library code (Colab/Kaggle
+# idioms: top-level imports mid-cell, bare file opens). Exclude them from CI lint.
+extend-exclude = ["notebooks"]
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/measurex_vision"]
 
