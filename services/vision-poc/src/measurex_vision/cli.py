@@ -123,7 +123,7 @@ def _save_debug_artifacts(out_dir: str, image, cloud, payload: dict) -> None:
     os.makedirs(out_dir, exist_ok=True)
     save_depth_artifacts(out_dir, image, cloud.depth, mask=cloud.mask)
     save_cloud_artifacts(
-        out_dir, image, cloud.mask, cloud.points_m,
+        out_dir, image, cloud.mask, cloud.object_points_m,
         bbox_xyxy=cloud.detection.bbox_xyxy, diagnostics=cloud.diagnostics.to_dict(),
     )
     with open(os.path.join(out_dir, "measurement.json"), "w", encoding="utf-8") as fh:
