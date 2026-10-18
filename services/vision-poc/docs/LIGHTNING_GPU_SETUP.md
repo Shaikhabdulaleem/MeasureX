@@ -44,35 +44,46 @@ git checkout main
 cd services/vision-poc
 ```
 
-## 2. Python 3.11 environment
+## 2. Python environment
 
-Lightning base images ship Python 3.11+. If `python --version` already reports
-3.11, use it; otherwise create a 3.11 venv (Studios have `python3.11`):
+Lightning Studio images ship Python ≥ 3.11 (3.12/3.13 are fine — the package
+needs ≥ 3.11). **Prefer the Studio's base environment**, which already has a
+CUDA-enabled `torch`: just use it. Create a venv only if you specifically want
+isolation — a fresh venv has no preinstalled torch, so you'll pay for the CUDA
+torch install in step 4:
 
 ```bash
-python3.11 -m venv .venv          # or: python -m venv .venv  (if already 3.11)
-source .venv/bin/activate
-python --version                  # expect Python 3.11.x
+python --version                  # expect 3.11+ ; use it directly
+# optional isolation only:
+# python -m venv .venv && source .venv/bin/activate
 ```
 
 ## 3. Install the vision package + the real model stack
 
 ```bash
 pip install --upgrade pip
-pip install -e ".[dev,seg,depth,vision]"
+pip install -e ".[dev,seg,depth]"
+python -c "import cv2" 2>/dev/null || pip install "opencv-python-headless>=4.9"
 ```
 
 - `seg` → SAM 2 + Grounding DINO (via `transformers`) + `timm`
 - `depth` → `torch`, `transformers`, Depth Anything V2 (via `transformers`); it
   also pulls Apple `depth_pro` as a package, but you never download its weights.
-- `vision` → OpenCV (needed to decode video) + Open3D
 - `dev` → pytest / ruff
+- OpenCV (`cv2`) is only needed to decode **video**; the second line installs it
+  only if the image doesn't already have it.
+
+> **Skip the `vision` extra.** It adds `open3d` (~400 MB and never imported by
+> the engine — geometry is pure NumPy). On an image that already has numpy 2.x /
+> opencv, requesting it can make pip downgrade numpy to 1.26 and break the
+> preinstalled torch. If that already happened, run `pip install -U "numpy>=2"`.
 
 ## 4. PyTorch + CUDA
 
-If `python scripts/check_gpu_environment.py` (step 7) reports **CUDA available:
-False**, the CPU build of torch was installed. Replace it with the CUDA build
-matching the Studio's CUDA (12.1 wheels work on current Lightning GPUs):
+On the base environment torch is already CUDA-enabled — skip this step. Only in a
+**fresh venv** (or if `python scripts/check_gpu_environment.py` in step 7 reports
+**CUDA available: False**) install the CUDA build (cu121 wheels run on current
+Lightning GPUs):
 
 ```bash
 pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu121
@@ -215,14 +226,14 @@ single- vs multi-frame comparison, failure-code counts) land in
 
 ## Shortest path to your first real L/W/H in Lightning AI
 
-From a fresh GPU Studio terminal, with a `box.jpg` ready to drag in:
+From a fresh GPU Studio terminal (base environment, with its CUDA torch), with a
+`box.jpg` ready to drag in:
 
 ```bash
 git clone https://github.com/Shaikhabdulaleem/MeasureX.git
 cd MeasureX && git checkout main && cd services/vision-poc
-python3.11 -m venv .venv && source .venv/bin/activate
-pip install --upgrade pip && pip install -e ".[dev,seg,depth,vision]"
-pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu121
+pip install --upgrade pip && pip install -e ".[dev,seg,depth]"
+python -c "import cv2" 2>/dev/null || pip install "opencv-python-headless>=4.9"
 python - <<'PY'
 from huggingface_hub import hf_hub_download
 hf_hub_download("facebook/sam2.1-hiera-small", "sam2.1_hiera_small.pt", local_dir="weights")

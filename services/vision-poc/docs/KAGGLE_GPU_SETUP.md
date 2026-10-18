@@ -35,23 +35,31 @@ Small.
 
 ## 1. Clone, check out `main`, install
 
-Kaggle's base Python is 3.11, so use it directly (no venv needed inside the
-notebook). Run in a cell:
+Use Kaggle's **base environment** — do **not** create a venv. The base image
+already ships a CUDA-enabled `torch`, `numpy` 2.x, `opencv`, `timm`, etc.; a venv
+would throw those away and force a slow, fragile reinstall. Kaggle's Python is
+currently **3.13**, which is fine (the package needs ≥ 3.11). Run in a cell:
 
 ```python
 !git clone https://github.com/Shaikhabdulaleem/MeasureX.git /kaggle/working/MeasureX
 %cd /kaggle/working/MeasureX
 !git checkout main
 %cd services/vision-poc
-!python --version          # expect 3.11.x
-!pip install -e ".[dev,seg,depth,vision]"
+!pip install -e ".[dev,seg,depth]"
 ```
 
-Kaggle's torch image is already CUDA-enabled, so you normally do **not** need to
-reinstall torch. Only if the sanity check (step 3) reports `CUDA available: False`:
+> **Do not add the `vision` extra on Kaggle.** It pulls `open3d` (~400 MB, and
+> the engine never imports it) and `opencv-python-headless`, which collides with
+> Kaggle's preinstalled `opencv-python` and makes pip **downgrade numpy to
+> 1.26**, breaking the preinstalled torch/opencv (both built for numpy 2.x).
+> `cv2` for video is already present from the base image.
+
+Kaggle's torch is already CUDA-enabled, so do **not** reinstall it. If a previous
+attempt already downgraded numpy (you'll see `numpy 1.26.4 ... incompatible`
+errors, or a "compiled against numpy 2.x" warning on `import torch`), restore it:
 
 ```python
-!pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu121
+!pip install -U "numpy>=2"
 ```
 
 ## 2. Weights
