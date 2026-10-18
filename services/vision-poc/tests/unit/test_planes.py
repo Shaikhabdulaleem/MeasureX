@@ -35,6 +35,34 @@ def test_fit_plane_recovers_normal():
     assert plane.inlier_mask.mean() > 0.9
 
 
+def test_fit_plane_horizontal_recovers_normal_and_offset():
+    # Horizontal plane at z = 0.5: normal ~ +/-[0,0,1], offset ~ -/+0.5.
+    rng = np.random.default_rng(3)
+    xy = rng.uniform(-1, 1, size=(500, 2))
+    pts = np.column_stack([xy, np.full(len(xy), 0.5)])
+    pts += rng.normal(scale=0.002, size=pts.shape)
+    plane = fit_plane_ransac(pts, threshold_m=0.01, seed=1)
+    assert abs(abs(float(plane.normal[2])) - 1.0) < 1e-3  # normal is vertical
+    assert abs(abs(plane.offset) - 0.5) < 1e-2            # plane sits at z=0.5
+
+
+def test_fit_plane_refit_avoids_full_matrix_svd(monkeypatch):
+    # Regression seam: the refit must go through the 3x3 covariance/eigh path,
+    # never full-matrix SVD on the N x 3 cloud (the real-carton host-RAM OOM).
+    # A large/tall inlier set must refit fine with svd made to blow up.
+    import measurex_vision.geometry.planes as planes_mod
+
+    def _boom(*_a, **_k):
+        raise AssertionError("np.linalg.svd must not be called in plane refit")
+
+    monkeypatch.setattr(planes_mod.np.linalg, "svd", _boom)
+
+    pts, normal = _tilted_plane_points([0.1, 0.2, 1.0], n=300_000)
+    plane = fit_plane_ransac(pts, threshold_m=0.01, seed=1)
+    assert abs(abs(float(plane.normal @ normal)) - 1.0) < 1e-2
+    assert plane.inlier_mask.mean() > 0.9
+
+
 def test_oriented_up_points_toward_cloud():
     pts, _ = _tilted_plane_points([0.0, 0.0, 1.0])
     # Add object points clearly on the +Z side.

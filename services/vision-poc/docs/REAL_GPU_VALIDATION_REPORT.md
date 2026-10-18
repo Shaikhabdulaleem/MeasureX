@@ -82,6 +82,17 @@
 
 **Rationale:** `____`
 
+## 16. Known issues found & fixed during validation
+- **O(N²) plane-refit memory bug (fixed).** The real Kaggle carton test ran the
+  full production pipeline (Grounding DINO + SAM 2 + Depth Anything V2) and hit a
+  host-memory OOM/restart, even though each model passed standalone. Root cause:
+  `geometry/planes.py::fit_plane_ransac` refit the inlier plane with
+  `np.linalg.svd(pts - centroid)`, whose default `full_matrices=True` materialises
+  an N×N `U` for a masked cloud of hundreds of thousands of points. Replaced with
+  a 3×3 covariance + `np.linalg.eigh` (smallest eigenvector = plane normal); same
+  normal/offset/inlier contract, no N×N allocation. Covered by a regression test
+  that fails if full-matrix SVD is reused.
+
 ---
 Flutter integration does **not** start automatically — it requires explicit owner
 approval after reviewing this report (M6 Step 13).
