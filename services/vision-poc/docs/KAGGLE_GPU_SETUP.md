@@ -68,6 +68,14 @@ errors, or a "compiled against numpy 2.x" warning on `import torch`), restore it
 > `%cd /kaggle/working/MeasureX/services/vision-poc` (shown below) so the cell is
 > self-contained.
 
+> **Never reinstall `torch` alone.** Kaggle's `torch` and `torchvision` are a
+> matched pair; reinstalling one (e.g. a `--index-url .../cu121` torch install)
+> desyncs them and `transformers` then fails to import with
+> `RuntimeError: operator torchvision::nms does not exist`. If that happens,
+> reinstall the matching pair from one index, e.g.
+> `!pip install "torch==2.5.1" "torchvision==0.20.1" --index-url https://download.pytorch.org/whl/cu121`
+> (torchvision 0.20.1 matches torch 2.5.1 — pick the match for your torch).
+
 ## 2. Weights
 
 Same as Lightning. SAM 2 is a manual download; Grounding DINO and Depth Anything

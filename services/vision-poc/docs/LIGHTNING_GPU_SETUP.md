@@ -80,14 +80,22 @@ python -c "import cv2" 2>/dev/null || pip install "opencv-python-headless>=4.9"
 
 ## 4. PyTorch + CUDA
 
-On the base environment torch is already CUDA-enabled — skip this step. Only in a
-**fresh venv** (or if `python scripts/check_gpu_environment.py` in step 7 reports
-**CUDA available: False**) install the CUDA build (cu121 wheels run on current
-Lightning GPUs):
+On the base environment torch is already CUDA-enabled — **skip this step**. Only in
+a **fresh venv** (or if `python scripts/check_gpu_environment.py` in step 7 reports
+**CUDA available: False**) install the CUDA build — and always reinstall
+`torchvision` from the **same** index in the **same** command, or you get a
+mismatched pair and `transformers` fails to import with
+`RuntimeError: operator torchvision::nms does not exist`:
 
 ```bash
-pip install --force-reinstall torch --index-url https://download.pytorch.org/whl/cu121
+pip install --force-reinstall torch torchvision --index-url https://download.pytorch.org/whl/cu121
 ```
+
+> Never reinstall `torch` alone on a hosted base image: it desyncs the
+> preinstalled `torchvision`. If you already did, install the matching pair, e.g.
+> `pip install "torch==2.5.1" "torchvision==0.20.1" --index-url https://download.pytorch.org/whl/cu121`
+> (torchvision 0.20.1 matches torch 2.5.1; pick the matching torchvision for your
+> torch version).
 
 ## 5. Download the approved weights
 
