@@ -32,6 +32,9 @@ class HeuristicConfidenceEstimator(ConfidenceEstimator):
     §3, VISION_ENGINE_POC.md §9). Weights are placeholders, not tuned."""
 
     MAX_SCORE = 0.84  # stays within MEDIUM until benchmark calibration
+    # Multiplier when scale comes from an assumed FOV rather than a measured
+    # focal — the lateral (L/W) scale is then a guess (M8 Step 5).
+    ASSUMED_INTRINSICS_PENALTY = 0.7
 
     def estimate(self, evidence: dict[str, Any]) -> Confidence:
         plane_inlier_ratio = _clamp01(float(evidence.get("plane_inlier_ratio", 0.0)))
@@ -50,6 +53,8 @@ class HeuristicConfidenceEstimator(ConfidenceEstimator):
             + 0.20 * density
             + 0.20 * mask_quality
         )
+        if evidence.get("intrinsics_assumed"):
+            score *= self.ASSUMED_INTRINSICS_PENALTY
         score = min(self.MAX_SCORE, score)
         conf = Confidence.from_score(score)
         # Never report HIGH yet, whatever the arithmetic.

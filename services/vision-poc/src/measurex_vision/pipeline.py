@@ -29,6 +29,7 @@ from .geometry import (
     extract_supported_dimensions,
     fit_plane_ransac,
     oriented_up,
+    resolve_intrinsics,
     segment_object_points,
 )
 from .quality.confidence import ConfidenceEstimator, HeuristicConfidenceEstimator
@@ -58,19 +59,38 @@ def _release(provider: object) -> None:
         release()
 
 
+def _provider_version(provider: object) -> str:
+    """Best-effort identifier of a provider for the output diagnostics."""
+    for attr in ("version", "model_id", "checkpoint_path"):
+        val = getattr(provider, attr, None)
+        if val:
+            return str(val)
+    return type(provider).__name__
+
+
 def build_masked_cloud(
     image: np.ndarray,
     *,
     detector: Detector,
     segmenter: Segmenter,
     depth: DepthEstimator,
+    explicit_intrinsics: CameraIntrinsics | None = None,
+    exif_focal_px: float | None = None,
+    fallback_fov_deg: float | None = None,
     release_models: bool = False,
 ) -> MaskedCloudResult:
     """Run the M2 pipeline; return a MaskedCloud or a typed MeasurementFailure.
 
+    Intrinsics are resolved from the best available scale source (explicit / EXIF
+    / device profile / depth-model focal / fallback FOV); an assumed FOV is
+    flagged so confidence is penalized downstream.
+
     ``release_models`` frees each model right after its stage so only one lives at
     a time — needed to fit GDINO + SAM 2 + Depth Pro on a small GPU."""
     from .contracts import FailureCode
+
+    detector_version = _provider_version(detector)
+    segmenter_version = _provider_version(segmenter)
 
     stage_started = perf_counter()
     detections = detector.detect(image)
@@ -99,8 +119,18 @@ def build_masked_cloud(
     depth_ms = (perf_counter() - stage_started) * 1000.0
     stage_started = perf_counter()
     h, w = depth_result.depth_m.shape
-    intr = CameraIntrinsics.from_focal(depth_result.focal_px, w, h)
-    points = backproject_depth(depth_result.depth_m, intr, mask=mask)
+    # A model's focal is a trustworthy scale source only if it was predicted,
+    # not derived from an assumed FOV (Depth Anything V2) — see DepthResult.
+    depth_focal = None if depth_result.focal_is_assumed else depth_result.focal_px
+    resolved = resolve_intrinsics(
+        w,
+        h,
+        explicit=explicit_intrinsics,
+        exif_focal_px=exif_focal_px,
+        depth_focal_px=depth_focal,
+        fallback_fov_deg=fallback_fov_deg,
+    )
+    points = backproject_depth(depth_result.depth_m, resolved.intrinsics, mask=mask)
     if points.shape[0] < 50:  # not enough 3D support to measure anything
         return MeasurementFailure(failure_code=FailureCode.POINTCLOUD_SPARSE)
 
@@ -109,8 +139,11 @@ def build_masked_cloud(
             "mask_area_ratio": float(mask.mean()),
             "point_count": int(points.shape[0]),
             "depth_valid_ratio": depth_result.valid_ratio,
-            "focal_px": depth_result.focal_px,
+            "focal_px": resolved.intrinsics.fx,
             "detector_reason": target.reason,
+            "detector_version": detector_version,
+            "segmenter_version": segmenter_version,
+            **resolved.to_dict(),
         }
     )
     return MaskedCloud(
@@ -139,12 +172,22 @@ def build_measurement(
     segmenter: Segmenter,
     depth: DepthEstimator,
     confidence: ConfidenceEstimator | None = None,
+    explicit_intrinsics: CameraIntrinsics | None = None,
+    exif_focal_px: float | None = None,
+    fallback_fov_deg: float | None = None,
     release_models: bool = False,
 ) -> MeasurementResult:
     """Full M3 path: masked cloud -> support plane -> object -> L/W/H + confidence."""
     started = perf_counter()
     cloud = build_masked_cloud(
-        image, detector=detector, segmenter=segmenter, depth=depth, release_models=release_models
+        image,
+        detector=detector,
+        segmenter=segmenter,
+        depth=depth,
+        explicit_intrinsics=explicit_intrinsics,
+        exif_focal_px=exif_focal_px,
+        fallback_fov_deg=fallback_fov_deg,
+        release_models=release_models,
     )
     if isinstance(cloud, MeasurementFailure):
         return cloud
@@ -192,14 +235,20 @@ def measure_from_cloud(
     }
     timing_ms["total"] = sum(timing_ms.values())
 
+    assumptions = ["fx=fy, principal point at image centre"]
+    if evidence.get("intrinsics_assumed"):
+        fov = evidence.get("assumed_fov_deg")
+        assumptions.append(f"scale from assumed FOV ({fov} deg) — not measured")
+
     return MeasurementSuccess(
         dimensions=dimensions,
         confidence=conf,
-        diagnostics=Diagnostics(
-            assumptions=["fx=fy, principal point at image centre"],
-            extra=evidence,
-        ),
-        model_versions={"depth": cloud.depth.version},
+        diagnostics=Diagnostics(assumptions=assumptions, extra=evidence),
+        model_versions={
+            "depth": cloud.depth.version,
+            "detector": str(evidence.get("detector_version", "")),
+            "segmenter": str(evidence.get("segmenter_version", "")),
+        },
         timing_ms=timing_ms,
     )
 
@@ -289,6 +338,9 @@ def build_measurement_video(
     depth: DepthEstimator,
     stabilizer: TemporalStabilizer | None = None,
     confidence: ConfidenceEstimator | None = None,
+    explicit_intrinsics: CameraIntrinsics | None = None,
+    exif_focal_px: float | None = None,
+    fallback_fov_deg: float | None = None,
     release_models: bool = False,
 ) -> MeasurementResult:
     """Measure each frame (M3) then temporally stabilize."""
@@ -304,6 +356,9 @@ def build_measurement_video(
             segmenter=segmenter,
             depth=depth,
             confidence=confidence,
+            explicit_intrinsics=explicit_intrinsics,
+            exif_focal_px=exif_focal_px,
+            fallback_fov_deg=fallback_fov_deg,
             release_models=release_models,
         )
         for f in frames

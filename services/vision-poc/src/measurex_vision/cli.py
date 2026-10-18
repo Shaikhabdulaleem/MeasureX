@@ -28,11 +28,18 @@ def _detector_cfg(args) -> dict:
     return cfg
 
 
+def _depth_provider(args) -> str:
+    """Resolve the depth provider: no production-safe default selects Depth Pro."""
+    if args.provider:
+        return args.provider
+    return "depth_anything_v2" if args.production else "depth_pro"
+
+
 def _run_image(args) -> int:
     from .contracts import MeasurementSuccess
     from .depth import get_depth_estimator
     from .detection import get_detector
-    from .io import load_image
+    from .io import exif_focal_px, load_image
     from .pipeline import (
         MaskedCloud,
         build_masked_cloud,
@@ -45,21 +52,27 @@ def _run_image(args) -> int:
     # Only model-backed providers take a checkpoint; box_mask is model-free.
     seg_cfg = {"checkpoint_path": args.checkpoint} if args.segmenter != "box_mask" else {}
     providers = {
-        "detector": get_detector(args.detector, **_detector_cfg(args)),
-        "segmenter": get_segmenter(args.segmenter, **seg_cfg),
-        "depth": get_depth_estimator(args.provider, checkpoint_path=args.checkpoint),
+        "detector": get_detector(args.detector, production=args.production, **_detector_cfg(args)),
+        "segmenter": get_segmenter(args.segmenter, production=args.production, **seg_cfg),
+        "depth": get_depth_estimator(
+            _depth_provider(args), production=args.production, checkpoint_path=args.checkpoint
+        ),
+    }
+    intr = {
+        "exif_focal_px": exif_focal_px(args.path),
+        "fallback_fov_deg": args.fov_deg,
     }
 
     if args.debug:
         # Build the cloud once; save artifacts; measure from the same cloud.
-        cloud = build_masked_cloud(image, **providers, release_models=args.low_memory)
+        cloud = build_masked_cloud(image, **providers, **intr, release_models=args.low_memory)
         outcome = measure_from_cloud(cloud) if isinstance(cloud, MaskedCloud) else cloud
         payload = {"input": args.path, **outcome.to_dict()}
         out_dir = os.environ.get("MEASUREX_VISION_OUTPUT_DIR", "./outputs")
         if isinstance(cloud, MaskedCloud):
             _save_debug_artifacts(out_dir, image, cloud, payload)
     else:
-        outcome = build_measurement(image, **providers, release_models=args.low_memory)
+        outcome = build_measurement(image, **providers, **intr, release_models=args.low_memory)
         payload = {"input": args.path, **outcome.to_dict()}
 
     print(json.dumps(payload, indent=2))
@@ -91,9 +104,12 @@ def _run_video(args) -> int:
     seg_cfg = {"checkpoint_path": args.checkpoint} if args.segmenter != "box_mask" else {}
     outcome = build_measurement_video(
         frames,
-        detector=get_detector(args.detector, **_detector_cfg(args)),
-        segmenter=get_segmenter(args.segmenter, **seg_cfg),
-        depth=get_depth_estimator(args.provider, checkpoint_path=args.checkpoint),
+        detector=get_detector(args.detector, production=args.production, **_detector_cfg(args)),
+        segmenter=get_segmenter(args.segmenter, production=args.production, **seg_cfg),
+        depth=get_depth_estimator(
+            _depth_provider(args), production=args.production, checkpoint_path=args.checkpoint
+        ),
+        fallback_fov_deg=args.fov_deg,
         release_models=args.low_memory,
     )
     payload = {"input": args.path, "capture_type": "video", **outcome.to_dict()}
@@ -118,8 +134,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_image.add_argument("path", help="path to the image file")
     p_image.add_argument("--detector", default="central_candidate", help="detector (default: central_candidate)")
     p_image.add_argument("--segmenter", default="sam2", help="segmenter (default: sam2)")
-    p_image.add_argument("--provider", default="depth_pro", help="depth provider (default: depth_pro)")
+    p_image.add_argument("--provider", default=None, help="depth provider (default: depth_pro, or depth_anything_v2 with --production)")
     p_image.add_argument("--checkpoint", default=None, help="model checkpoint path (else env/default)")
+    p_image.add_argument("--production", action="store_true", help="refuse non-production-allowed models (e.g. Depth Pro)")
+    p_image.add_argument("--fov-deg", type=float, default=None, help="fallback horizontal FOV when focal is unknown")
     p_image.add_argument("--debug", action="store_true", help="save debug artifacts")
     p_image.add_argument("--low-memory", action="store_true", help="free each model after its stage (small GPUs)")
     p_image.add_argument("--box-threshold", type=float, default=0.35, help="grounding_dino box confidence (default: 0.35)")
@@ -129,8 +147,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_video.add_argument("path", help="path to the video file")
     p_video.add_argument("--detector", default="central_candidate", help="detector (default: central_candidate)")
     p_video.add_argument("--segmenter", default="sam2", help="segmenter (default: sam2)")
-    p_video.add_argument("--provider", default="depth_pro", help="depth provider (default: depth_pro)")
+    p_video.add_argument("--provider", default=None, help="depth provider (default: depth_pro, or depth_anything_v2 with --production)")
     p_video.add_argument("--checkpoint", default=None, help="model checkpoint path (else env/default)")
+    p_video.add_argument("--production", action="store_true", help="refuse non-production-allowed models (e.g. Depth Pro)")
+    p_video.add_argument("--fov-deg", type=float, default=None, help="fallback horizontal FOV when focal is unknown")
     p_video.add_argument("--max-frames", type=int, default=8, help="frames to sample (default: 8)")
     p_video.add_argument("--debug", action="store_true", help="save measurement.json")
     p_video.add_argument("--low-memory", action="store_true", help="free each model after its stage (small GPUs)")

@@ -19,6 +19,10 @@ class DepthResult:
     focal_px: float      # estimated focal length in pixels
     valid_ratio: float   # fraction of pixels with usable depth
     version: str         # model/checkpoint identifier
+    # True when focal_px is derived from an assumed FOV rather than predicted by
+    # the model (e.g. Depth Anything V2). The intrinsics resolver must not treat
+    # such a focal as a trustworthy scale source — see geometry/intrinsics.py.
+    focal_is_assumed: bool = False
 
 
 class DepthEstimator(ABC):

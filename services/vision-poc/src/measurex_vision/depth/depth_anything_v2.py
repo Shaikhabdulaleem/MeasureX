@@ -80,6 +80,7 @@ class DepthAnythingV2Estimator(DepthEstimator):
             focal_px=focal_px,
             valid_ratio=valid_ratio,
             version=f"{self.model_id} (hfov={self.hfov_deg}deg)",
+            focal_is_assumed=True,  # focal comes from an assumed FOV, not prediction
         )
 
     def release(self) -> None:

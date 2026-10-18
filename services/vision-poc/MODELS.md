@@ -4,10 +4,16 @@ Every model or checkpoint must be recorded here **before** its weights are
 downloaded (CLAUDE.md "Commercial/license discipline", VISION_DECISION.md §8).
 Weights are never committed to this repository.
 
+> **Code source of truth:** this table is mirrored in
+> `src/measurex_vision/models.py` (`MODEL_REGISTRY`), which the provider
+> registries enforce. Keep the two in sync. `get_*(..., production=True)` refuses
+> any provider whose `production_allowed` is not `true`.
+
 > **Production gate:** a checkpoint whose weight license forbids commercial use
 > must not enter a production path. Such a model may be used for the POC and the
 > benchmark only. The `DepthEstimator` interface exists so a
-> commercially-licensed model can replace it before productionization.
+> commercially-licensed model can replace it before productionization. No
+> production-safe default selects Depth Pro.
 
 ## Depth estimation
 
@@ -20,9 +26,15 @@ Weights are never committed to this repository.
 | Code license       | Apple sample-code license (see repo)                          | Apache-2.0                                                                         |
 | **Weight license** | **Apple-ASCL — research only**                                | **Apache-2.0** (confirm exact checkpoint + data provenance)                        |
 | **Commercial use** | **NO**                                                        | **YES** (confirm per checkpoint)                                                   |
-| PRODUCTION_ALLOWED | **false**                                                     | **pending** (confirm checkpoint; no focal prediction — uses an HFOV assumption)   |
+| PRODUCTION_ALLOWED | **false**                                                     | **true** (scale via CameraIntrinsicsResolver; confirm checkpoint revision)        |
 | Expected VRAM      | ~4–6 GB                                                        | ~1 GB (Small)                                                                      |
-| Status             | Active (research/benchmark; **not for production**)           | **Active** — `--provider depth_anything_v2` (Small)                               |
+| Status             | Active (research/benchmark; **not for production**)           | **Active** — `--provider depth_anything_v2` (Small); production default           |
+
+> **Scale note (Depth Anything V2):** DA-V2 does not predict focal length. Its
+> `DepthResult.focal_is_assumed` is `True`, so the `CameraIntrinsicsResolver`
+> (`geometry/intrinsics.py`) does not treat its focal as a measured scale source
+> and falls back to EXIF / device profile / configured FOV / assumed FOV. An
+> assumed-FOV result is reported as `intrinsics_source` and penalizes confidence.
 
 ## Segmentation
 

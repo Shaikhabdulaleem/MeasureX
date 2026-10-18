@@ -14,20 +14,26 @@ Read first: [`docs/VISION_DECISION.md`](../../docs/VISION_DECISION.md),
 [`docs/VISION_BENCHMARK.md`](../../docs/VISION_BENCHMARK.md), and
 [`CLAUDE.md`](CLAUDE.md).
 
-## Status — Milestone 5 (benchmark harness)
+## Status — Milestone 8 (consolidation & production-safe baseline)
 
-The POC now runs end to end for still images and short videos. M0–M4 delivered
-the contracts, metric depth, target segmentation, support-plane geometry,
-integer-mm L/W/H, and robust temporal stabilization. **M5 adds the reproducible
-manifest benchmark and report generator.** Production integration remains out
-of scope until real benchmark evidence exists and an accuracy/confidence policy
-is approved.
+The POC runs end to end for still images and short videos. M0–M5 delivered the
+contracts, metric depth, target segmentation, support-plane geometry, integer-mm
+L/W/H, robust temporal stabilization, and the benchmark harness. M7 added the
+Grounding DINO target proposer and the Depth Anything V2 commercial-path depth
+provider. **M8 consolidates these into one production-oriented path:** a camera
+intrinsics resolver, a code-enforced model/license policy, and fuller output
+diagnostics. Production integration into the app remains out of scope until real
+benchmark evidence exists and an accuracy/confidence policy is approved.
 
-Depth providers (both behind the interface, see `MODELS.md`):
+Production path: **Grounding DINO → SAM 2 → Depth Anything V2 Metric Small →
+CameraIntrinsicsResolver → geometry → L/W/H → temporal → confidence.**
+
+Depth providers (both behind the interface, see `MODELS.md` / `models.py`):
 
 - **Depth Pro** — metric-depth baseline. Weights are **Apple-ASCL: research /
-  benchmark only, NOT for production**.
-- **Depth Anything V2** — commercial slot, _planned_ (raises `NotImplementedError`).
+  benchmark only** (`production_allowed = false`; the production gate refuses it).
+- **Depth Anything V2 Metric Small** — commercial-path default (Apache-2.0). No
+  focal prediction; scale resolved by the `CameraIntrinsicsResolver`.
 
 ```
 src/measurex_vision/
@@ -85,10 +91,17 @@ Weights are git-ignored and never committed. Read `MODELS.md` before downloading
 python -m measurex_vision.cli --help
 python -m measurex_vision.cli image path/to/image.jpg --debug
 python -m measurex_vision.cli video path/to/video.mp4 --debug
+
+# Production-safe stack (refuses research-only models; DA-V2 default):
+python -m measurex_vision.cli image box.jpg \
+  --production --detector grounding_dino --segmenter sam2 --fov-deg 65
 ```
 
 With `--debug`, inspectable artifacts are written under `outputs/` (override
-with `MEASUREX_VISION_OUTPUT_DIR`).
+with `MEASUREX_VISION_OUTPUT_DIR`). `--production` refuses any model whose
+`production_allowed` is not true; `--fov-deg` sets the fallback FOV used when no
+focal is known (the output reports `intrinsics_source` and penalizes confidence
+when scale is assumed). EXIF focal, when present, is used automatically.
 
 ## Benchmark
 
