@@ -4,8 +4,10 @@
 > same real carton: the original real run (§5), the support-plane-separated run
 > (§17, fix 08ef2e3), the post-intrinsics-fix run (§19A, fix 8eb020f), and two
 > depth-model *diagnostic* benchmarks — DA-V2 Base (§19B) and MetricAnything
-> Student (§19C). The two full production runs produced grossly wrong dimensions;
-> the diagnostic benchmarks (not full production runs) confirm that swapping the
+> Student (§19C). All **three** full production runs — §5 (1132/1046/619),
+> §17 (1409/848/470) and §19A (1057/884/368) — produced grossly wrong dimensions;
+> the two diagnostic benchmarks (DA-V2 Base and MetricAnything, **not** full
+> production runs) confirm that swapping the
 > monocular metric-depth model alone does not recover absolute scale, especially
 > height. A diagnostics-only patch (§18) gathered the real-run evidence. The M8
 > decision is recorded in [`../../../docs/ADR_RGB_METRIC_SCALE.md`](../../../docs/ADR_RGB_METRIC_SCALE.md).
@@ -29,7 +31,7 @@
 > production path — kept for comparison only, never for a production run.
 
 ## 3. License / commercial status (from MODELS.md)
-| Model | Weight license | Commercial | PRODUCTION_ALLOWED |
+| Model | Weight license | Commercial | PRODUCTION_APPROVED |
 |---|---|---|---|
 | Grounding DINO Tiny | Apache-2.0 | Yes | true |
 | SAM 2.1 Small | Apache-2.0 | Yes | true |
@@ -103,7 +105,19 @@ selector, intrinsics, RANSAC and geometry). Summary:
   overshoot is the support-plane architecture bug, not FOV alone.
 
 ## 14. Did confidence correlate with actual error?
-- `____` (e.g. "low confidence runs had the largest error" / "no correlation")
+
+Confidence was **not reliably correlated** with actual dimensional accuracy in
+this small validation set. Most importantly, the post-intrinsics-fix production
+run (§19A) returned **confidence = 0.6059, level = MEDIUM** while its errors were
+approximately **L +206%, W +205%, H +50%** — a grossly inaccurate result surfaced
+as MEDIUM.
+
+With only these few samples this is **not** a statistically proven correlation
+(or a proven lack of one); it is a clear calibration red flag, not a measured
+relationship. Therefore **current confidence must not be interpreted as
+billing-grade accuracy.** The confidence-calibration defect is tracked as the
+action item in §19D and in
+[`../../../docs/ADR_RGB_METRIC_SCALE.md`](../../../docs/ADR_RGB_METRIC_SCALE.md).
 
 ## 15. Recommendation (pick one)
 - [ ] A. Ready for wider benchmark
