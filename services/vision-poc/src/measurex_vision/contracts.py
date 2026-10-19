@@ -34,6 +34,7 @@ class FailureCode(str, Enum):
     SEGMENTATION_UNSTABLE = "segmentation_unstable"
     DEPTH_INVALID = "depth_invalid"
     POINTCLOUD_SPARSE = "pointcloud_sparse"
+    SUPPORT_PLANE_NOT_FOUND = "support_plane_not_found"
     GEOMETRY_DEGENERATE = "geometry_degenerate"
     TEMPORAL_INSTABILITY = "temporal_instability"
 
@@ -46,6 +47,7 @@ GUIDANCE: dict[FailureCode, str] = {
     FailureCode.SEGMENTATION_UNSTABLE: "Hold steady and keep the shipment fully in frame.",
     FailureCode.DEPTH_INVALID: "Too dark or reflective to read depth. Improve lighting and retry.",
     FailureCode.POINTCLOUD_SPARSE: "Not enough surface detail. Move a little closer and retry.",
+    FailureCode.SUPPORT_PLANE_NOT_FOUND: "Show more of the floor around the shipment and retry.",
     FailureCode.GEOMETRY_DEGENERATE: "Could not fit a box. Capture again from a slight angle.",
     FailureCode.TEMPORAL_INSTABILITY: "Readings unstable. Hold the phone steady and retry.",
 }

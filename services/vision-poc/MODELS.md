@@ -4,48 +4,84 @@ Every model or checkpoint must be recorded here **before** its weights are
 downloaded (CLAUDE.md "Commercial/license discipline", VISION_DECISION.md §8).
 Weights are never committed to this repository.
 
-> **Production gate:** a checkpoint whose weight license forbids commercial use
-> must not enter a production path. Such a model may be used for the POC and the
-> benchmark only. The `DepthEstimator` interface exists so a
-> commercially-licensed model can replace it before productionization.
+> **Code source of truth:** this table is mirrored in
+> `src/measurex_vision/models.py` (`MODEL_REGISTRY`), which the provider
+> registries enforce. Keep the two in sync. `get_*(..., production=True)` refuses
+> any provider whose `production_approved` is not `true`.
+
+> **Two separate concepts.** *Commercially licensed* (`commercial_use`) means the
+> code/weights are legally shippable. *Production-approved* (`production_approved`)
+> means the provider is approved for real production measurement quality. They are
+> independent: the model-free fallbacks (`central_candidate`, `box_mask`) are
+> commercially unencumbered yet are **CI / development / synthetic-test aids only**
+> and are **not** production-approved. Depth Pro is neither.
+
+> **Production gate.** `--production` resolves the approved real stack
+> (**Grounding DINO Tiny → SAM 2.1 Small → Depth Anything V2 Metric Indoor Small**,
+> plus `CameraIntrinsicsResolver` → geometry → temporal stabilization) and refuses
+> `central_candidate`, `box_mask` and `depth_pro`. A checkpoint whose weight
+> license forbids commercial use must never enter a production path.
+
+> **Revision pinning.** Production model revisions are **frozen** to the exact HF
+> commits below and passed into `from_pretrained(..., revision=...)`; production
+> execution never silently downloads an updated `main`. The checkpoint SHA256s
+> below are the Hugging Face git-LFS object hashes at each pinned revision,
+> verified independently via the HF API — `hf_hub_download(..., revision=...)`
+> re-verifies the LFS SHA256 on download, so a corrupted/substituted weight fails
+> fast. (Depth Pro is research-only and unpinned, so no SHA256 is stored.)
 
 ## Depth estimation
 
 | Field              | Depth Pro                                                     | Depth Anything V2 (metric)                                                        |
 | ------------------ | ------------------------------------------------------------- | --------------------------------------------------------------------------------- |
-| Role               | Metric depth — **POC/benchmark baseline**                     | Commercial slot — **planned, not implemented**                                    |
-| Code repo          | https://github.com/apple/ml-depth-pro                         | https://github.com/DepthAnything/Depth-Anything-V2                                |
-| Weights            | https://huggingface.co/apple/DepthPro                         | (to confirm at adoption)                                                          |
-| Version / commit   | checkpoint `depth_pro.pt` (record exact revision on download) | —                                                                                 |
-| Code license       | Apple sample-code license (see repo)                          | Apache-2.0 (to confirm per checkpoint)                                            |
-| **Weight license** | **Apple-ASCL — research only**                                | **to confirm** (metric checkpoints vary)                                          |
-| **Commercial use** | **NO**                                                        | TBD at adoption                                                                   |
-| Download source    | `scripts/download_models.py` → Hugging Face `apple/DepthPro`  | —                                                                                 |
-| Status             | Active (research/benchmark; **not for production**)           | Planned — `get_depth_estimator("depth_anything_v2")` raises `NotImplementedError` |
+| Role               | Metric depth — **POC/benchmark baseline**                     | Metric depth — **commercial-path, low memory**                                    |
+| Model / repo       | https://github.com/apple/ml-depth-pro                         | `depth-anything/Depth-Anything-V2-Metric-Indoor-Small-hf` (via transformers)      |
+| Weights            | https://huggingface.co/apple/DepthPro                         | Hugging Face (Metric Indoor Small)                                                 |
+| Version / commit   | checkpoint `depth_pro.pt` (research only — not pinned)        | **pinned** HF commit `8078d68a9c75a972131914f6afd0c1723be0da7f` (`model.safetensors`) |
+| Checkpoint SHA256  | not stored (research-only, unpinned)                          | `e990eb82fbf11b05b7813261196a2b841bdcf5a05f64396724a8987fa90504a3` |
+| Code license       | Apple sample-code license (see repo)                          | Apache-2.0                                                                         |
+| **Weight license** | **Apple-ASCL — research only**                                | **Apache-2.0**                                                                     |
+| **Commercial use** | **NO**                                                        | **YES**                                                                            |
+| PRODUCTION_APPROVED | **false**                                                    | **true** (scale via CameraIntrinsicsResolver)                                     |
+| Expected VRAM      | ~4–6 GB                                                        | ~1 GB (Small)                                                                      |
+| Status             | Active (research/benchmark; **not for production**)           | **Active** — `--provider depth_anything_v2` (Small); production default           |
+
+> **Scale note (Depth Anything V2):** DA-V2 does not predict focal length. Its
+> `DepthResult.focal_is_assumed` is `True`, so the `CameraIntrinsicsResolver`
+> (`geometry/intrinsics.py`) does not treat its focal as a measured scale source
+> and falls back to EXIF / device profile / configured FOV / assumed FOV. An
+> assumed-FOV result is reported as `intrinsics_source` and penalizes confidence.
 
 ## Segmentation
 
 | Field              | SAM 2                                                          |
 | ------------------ | -------------------------------------------------------------- |
 | Role               | Shipment segmentation (box → mask)                             |
-| Code repo          | https://github.com/facebookresearch/sam2                       |
-| Weights            | HF `facebook/sam2-hiera-*` (record exact revision on download) |
+| Code repo          | https://github.com/facebookresearch/sam2 — **pinned** commit `2b90b9f5ceec907a1c18123530e92e794ad901a4` (frozen upstream HEAD, 2024-12-16; repo has no release tags). Installed via the `seg` extra. |
+| Model / weights    | HF `facebook/sam2.1-hiera-small`, **pinned** commit `ee5bba1d82bb8749febdf90f45e84b687142ba03`, checkpoint `sam2.1_hiera_small.pt` |
+| Checkpoint SHA256  | `6d1aa6f30de5c92224f8172114de081d104bbd23dd9dc5c58996f0cad5dc4d38` |
 | Code license       | Apache-2.0 (eval code BSD-3-Clause)                            |
 | **Weight license** | **Apache-2.0**                                                 |
 | **Commercial use** | **YES**                                                        |
 | Download source    | `scripts/download_models.py` (SAM 2 checkpoint)                |
 | Status             | Active (segmenter)                                             |
 
-## Detection (open-vocabulary, optional)
+## Detection (open-vocabulary) — shipment target proposer
 
-| Field              | Grounding DINO                                                                      |
-| ------------------ | ----------------------------------------------------------------------------------- |
-| Role               | Optional automatic shipment detection (default is the model-free central-candidate) |
-| Code repo          | https://github.com/IDEA-Research/GroundingDINO                                      |
-| Code license       | Apache-2.0                                                                          |
-| **Weight license** | **Apache-2.0** (confirm exact checkpoint at adoption)                               |
-| **Commercial use** | YES (confirm per checkpoint)                                                        |
-| Status             | Optional — not required for controlled POC images                                   |
+| Field                  | Grounding DINO                                                     |
+| ---------------------- | ----------------------------------------------------------------- |
+| Role                   | Locate the shipment and hand SAM 2 a tight prompt box             |
+| Model                  | `IDEA-Research/grounding-dino-tiny` (via `transformers`)          |
+| Checkpoint source      | HF `IDEA-Research/grounding-dino-tiny`, **pinned** commit `a2bb814dd30d776dcf7e30523b00659f4f141c71` (`model.safetensors`) |
+| Checkpoint SHA256      | `1a2412ef99bd74bcd3c2a246fa1e48581f8889a1300c9051974741314fc042f3` |
+| Code repo              | https://github.com/IDEA-Research/GroundingDINO                    |
+| Code license           | Apache-2.0                                                        |
+| **Weight license**     | **Apache-2.0**                                                   |
+| **Commercial use**     | **YES**                                                          |
+| **PRODUCTION_APPROVED** | **true**                                                        |
+| Expected VRAM          | ~1–2 GB (tiny)                                                    |
+| Runtime hardware       | NVIDIA GPU; feasible on CPU, slower                              |
+| Status                 | Active — target proposer (`--detector grounding_dino`)           |
 
 ### Notes
 
@@ -55,3 +91,7 @@ Weights are never committed to this repository.
 - Before adopting Depth Anything V2 (or any commercial-path model), confirm the
   **weight** license of the specific metric checkpoint (not just the code
   license) and update this table with the exact revision and license.
+- **Model-free fallbacks.** `central_candidate` (detector) and `box_mask`
+  (segmenter) carry no weights and are commercially unencumbered, but they are
+  CI / development / synthetic-test aids **only** — `production_approved = false`.
+  The production gate refuses them exactly as it refuses Depth Pro.

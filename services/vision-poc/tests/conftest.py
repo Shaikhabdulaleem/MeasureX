@@ -48,11 +48,12 @@ def _rotation(tilt_deg: float, yaw_deg: float) -> np.ndarray:
     return rz @ rx
 
 
-def make_box_on_floor(
+def make_object_and_support(
     l_mm: int, w_mm: int, h_mm: int, *, tilt_deg: float = 8.0, yaw_deg: float = 25.0
-) -> np.ndarray:
-    """A cuboid (top + 4 sides, bottom on the floor) sitting on a dense floor
-    slab, rigidly rotated (tilt+yaw) and translated. Metres."""
+) -> tuple[np.ndarray, np.ndarray]:
+    """``(object_points_m, support_points_m)``: a cuboid (top + 4 sides) and the
+    dense floor slab it sits on, kept separate as the camera-only pipeline keeps
+    them. Both rigidly rotated (tilt+yaw) and translated. Metres."""
     l, w, h = l_mm / 1000.0, w_mm / 1000.0, h_mm / 1000.0
 
     # Dense, large floor so it is the dominant plane (as a warehouse floor is,
@@ -76,10 +77,25 @@ def make_box_on_floor(
     faces.append(np.stack([gx4.ravel(), np.full(gx4.size, w / 2), gz4.ravel()], axis=-1))
     faces.append(np.stack([gx4.ravel(), np.full(gx4.size, -w / 2), gz4.ravel()], axis=-1))
 
-    pts = np.concatenate([floor, *faces], axis=0)
-    return pts @ _rotation(tilt_deg, yaw_deg).T + np.array([0.1, -0.2, 2.0])
+    rot, shift = _rotation(tilt_deg, yaw_deg).T, np.array([0.1, -0.2, 2.0])
+    obj = np.concatenate(faces, axis=0) @ rot + shift
+    support = floor @ rot + shift
+    return obj, support
+
+
+def make_box_on_floor(
+    l_mm: int, w_mm: int, h_mm: int, *, tilt_deg: float = 8.0, yaw_deg: float = 25.0
+) -> np.ndarray:
+    """The combined cuboid+floor cloud (for pure plane/geometry primitive tests)."""
+    obj, support = make_object_and_support(l_mm, w_mm, h_mm, tilt_deg=tilt_deg, yaw_deg=yaw_deg)
+    return np.concatenate([support, obj], axis=0)
 
 
 @pytest.fixture
 def box_on_floor():
     return make_box_on_floor
+
+
+@pytest.fixture
+def object_and_support():
+    return make_object_and_support

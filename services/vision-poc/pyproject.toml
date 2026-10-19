@@ -28,20 +28,27 @@ vision = [
     "pyyaml>=6",
 ]
 # Depth model stack (torch + Apple depth_pro). GPU-oriented; targets Python
-# 3.11/3.12, not 3.14. Un-pinned beyond lower bounds until adoption (MODELS.md).
-# Never installed in CI.
+# 3.11/3.12, not 3.14. Never installed in CI.
 depth = [
     "torch>=2.2",
     "pillow>=10",
     "depth_pro @ git+https://github.com/apple/ml-depth-pro.git",
+    # Depth Anything V2 Metric Indoor Small requires transformers >= 4.45
+    # (post_process_depth_estimation). Tested range: 4.45 .. <5 (validated 4.45–4.57).
+    "transformers>=4.45,<5",
 ]
 # Segmentation + optional detection stack (Apache-2.0 models). GPU-oriented,
-# never installed in CI. Un-pinned beyond lower bounds until adoption (MODELS.md).
+# never installed in CI.
 seg = [
     "torch>=2.2",
     "pillow>=10",
     # Distribution name is SAM-2 (normalizes to sam-2); `sam2 @ ...` fails pip's name check.
-    "SAM-2 @ git+https://github.com/facebookresearch/sam2.git",
+    # Pinned to the frozen upstream HEAD (2024-12-16; repo has no tags) — see MODELS.md.
+    "SAM-2 @ git+https://github.com/facebookresearch/sam2.git@2b90b9f5ceec907a1c18123530e92e794ad901a4",
+    # Grounding DINO target proposer via transformers (no custom CUDA ops).
+    # Same tested range as the depth stack (>=4.45 for the DA-V2 metric path).
+    "transformers>=4.45,<5",
+    "timm>=0.9",
 ]
 dev = [
     "pytest>=8",
@@ -51,6 +58,11 @@ dev = [
 
 [project.scripts]
 measurex-vision = "measurex_vision.cli:main"
+
+[tool.ruff]
+# Notebooks are GPU-validation scaffolding, not linted library code (Colab/Kaggle
+# idioms: top-level imports mid-cell, bare file opens). Exclude them from CI lint.
+extend-exclude = ["notebooks"]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/measurex_vision"]

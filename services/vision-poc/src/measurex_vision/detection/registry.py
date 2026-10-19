@@ -9,7 +9,11 @@ from .base import Detector
 KNOWN_DETECTORS = ("central_candidate", "grounding_dino")
 
 
-def get_detector(name: str, **cfg: Any) -> Detector:
+def get_detector(name: str, *, production: bool = False, **cfg: Any) -> Detector:
+    if production:
+        from ..models import assert_production_approved
+
+        assert_production_approved(name)
     if name == "central_candidate":
         from .central_candidate import CentralCandidateDetector
 

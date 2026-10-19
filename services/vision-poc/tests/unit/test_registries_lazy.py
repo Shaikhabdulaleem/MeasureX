@@ -18,9 +18,10 @@ def test_sam2_constructs_without_torch():
 
 
 def test_grounding_dino_constructs_without_torch():
-    det = get_detector("grounding_dino", checkpoint_path="/nonexistent.pth")
+    det = get_detector("grounding_dino")
     assert type(det).__name__ == "GroundingDinoDetector"
     assert "torch" not in sys.modules
+    assert "transformers" not in sys.modules
 
 
 def test_unknown_names_raise():

@@ -14,6 +14,13 @@ every result with a photo and a full audit trail. Delivered in phases: Phase A
 Phase C (AR + pallets + Aymakan integration). We are currently in **Milestone 0
 (Foundation)**.
 
+> **Note (M8): the marker-mat / ArUco measurement method is being superseded** by
+> a camera-only vision engine (no mat, no marker, no reference object) — see
+> [`services/vision-poc`](services/vision-poc/) and
+> [`docs/VISION_DECISION.md`](docs/VISION_DECISION.md). Mat/ArUco references in
+> this file and the PRD will be reconciled to v3 in a later, dedicated change.
+> Until then, `docs/VISION_DECISION.md` wins on measurement method.
+
 ## Stack
 
 | Layer              | Choice                                                                                                                           |

@@ -19,11 +19,14 @@ def test_build_masked_cloud_success(mock_estimator):
         depth=mock_estimator,
     )
     assert isinstance(out, MaskedCloud)
-    assert out.points_m.ndim == 2 and out.points_m.shape[1] == 3
-    assert out.points_m.shape[0] > 50
+    assert out.object_points_m.ndim == 2 and out.object_points_m.shape[1] == 3
+    assert out.object_points_m.shape[0] > 50
     # 0.6 box over the frame -> ~0.36 mask area.
     assert 0.3 < out.diagnostics.extra["mask_area_ratio"] < 0.4
-    assert out.diagnostics.extra["point_count"] == out.points_m.shape[0]
+    assert out.diagnostics.extra["point_count"] == out.object_points_m.shape[0]
+    # Support cloud is built from scene pixels and is disjoint from the object.
+    assert out.support_points_m.shape[0] > 0
+    assert out.diagnostics.extra["support_candidate_point_count"] == out.support_points_m.shape[0]
     assert set(out.timing_ms) == {"detection", "segmentation", "depth", "pointcloud"}
     assert all(value >= 0 for value in out.timing_ms.values())
 

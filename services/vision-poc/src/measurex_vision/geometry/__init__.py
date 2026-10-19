@@ -13,13 +13,22 @@ from .dimensions import (
     normalize_axes_to_lwh,
     segment_object_points,
 )
-from .intrinsics import CameraIntrinsics
+from .intrinsics import (
+    DEFAULT_FALLBACK_FOV_DEG,
+    CameraIntrinsics,
+    IntrinsicsResult,
+    IntrinsicsSource,
+    resolve_intrinsics,
+)
 from .planes import Plane, fit_plane_ransac, oriented_up, point_plane_distance
 from .pointcloud import backproject, backproject_depth
 
 __all__ = [
+    "DEFAULT_FALLBACK_FOV_DEG",
     "CameraIntrinsics",
     "GeometryEstimator",
+    "IntrinsicsResult",
+    "IntrinsicsSource",
     "OrientedBox",
     "Plane",
     "backproject",
@@ -32,5 +41,6 @@ __all__ = [
     "oriented_box",
     "oriented_up",
     "point_plane_distance",
+    "resolve_intrinsics",
     "segment_object_points",
 ]

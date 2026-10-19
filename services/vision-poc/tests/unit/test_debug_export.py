@@ -10,6 +10,8 @@ from measurex_vision.depth.base import DepthResult
 from measurex_vision.visualization import (
     colorize_depth,
     overlay_mask,
+    overlay_support_plane_inliers,
+    overlay_support_region,
     save_cloud_artifacts,
     save_depth_artifacts,
 )
@@ -94,3 +96,35 @@ def test_overlay_and_cloud_artifacts(tmp_path, sample_image):
         assert (tmp_path / name).exists()
     diag = json.loads((tmp_path / "cloud_diagnostics.json").read_text())
     assert diag["point_count"] == 120
+
+
+def test_overlay_support_region_distinguishes_object_and_support(sample_image):
+    object_mask = np.zeros(sample_image.shape[:2], dtype=bool)
+    object_mask[1:4, 1:4] = True
+    support_mask = np.zeros(sample_image.shape[:2], dtype=bool)
+    support_mask[5:7, 1:6] = True
+
+    out = overlay_support_region(sample_image, object_mask, support_mask)
+    assert out.shape == sample_image.shape
+    assert out.dtype == np.uint8
+    # The two tinted regions must render differently.
+    assert not np.array_equal(out[object_mask].mean(axis=0), out[support_mask].mean(axis=0))
+
+
+def test_overlay_support_plane_inliers_three_classes(sample_image):
+    object_mask = np.zeros(sample_image.shape[:2], dtype=bool)
+    object_mask[1:3, 1:3] = True
+    support_mask = np.zeros(sample_image.shape[:2], dtype=bool)
+    support_mask[5:7, 1:6] = True
+    inlier_mask = np.zeros(sample_image.shape[:2], dtype=bool)
+    inlier_mask[5:6, 1:6] = True  # top support row is on the plane
+
+    out = overlay_support_plane_inliers(sample_image, object_mask, support_mask, inlier_mask)
+    outliers = support_mask & ~inlier_mask
+    inlier_col = out[inlier_mask].mean(axis=0)
+    outlier_col = out[outliers].mean(axis=0)
+    object_col = out[object_mask].mean(axis=0)
+    # Inliers, support outliers and object pixels are three distinct colours.
+    assert not np.array_equal(inlier_col, outlier_col)
+    assert not np.array_equal(inlier_col, object_col)
+    assert not np.array_equal(outlier_col, object_col)

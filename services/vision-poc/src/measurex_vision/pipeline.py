@@ -22,16 +22,20 @@ from .contracts import (
 )
 from .depth.base import DepthEstimator, DepthResult
 from .detection.base import Detection, Detector
+from .detection.select import classify_target
 from .geometry import (
     CameraIntrinsics,
     backproject_depth,
     extract_supported_dimensions,
     fit_plane_ransac,
     oriented_up,
+    resolve_intrinsics,
     segment_object_points,
 )
+from .geometry.diagnostics import geometry_diagnostics, image_space_diagnostics
 from .quality.confidence import ConfidenceEstimator, HeuristicConfidenceEstimator
 from .quality.mask_checks import validate_mask
+from .quality.support_region import support_region_mask
 from .segmentation.base import Segmenter
 from .temporal.robust import RobustTemporalStabilizer
 from .temporal.stabilizer import TemporalStabilizer
@@ -39,15 +43,36 @@ from .temporal.stabilizer import TemporalStabilizer
 
 @dataclass(frozen=True)
 class MaskedCloud:
-    points_m: np.ndarray       # (N, 3) camera-frame metres
-    mask: np.ndarray           # (H, W) bool
+    # Kept separate on purpose: the support plane is fitted from
+    # support_points_m only, never from object_points_m, so a large planar
+    # carton face can't be mistaken for the floor (M8 geometry fix).
+    object_points_m: np.ndarray    # (N, 3) camera-frame metres — shipment pixels
+    support_points_m: np.ndarray   # (M, 3) camera-frame metres — support-surface candidates
+    mask: np.ndarray               # (H, W) bool — shipment mask
     detection: Detection
     depth: DepthResult
+    support_mask: np.ndarray | None = None  # (H, W) bool — support candidate pixels (debug overlays)
     diagnostics: Diagnostics = field(default_factory=Diagnostics)
     timing_ms: dict[str, float] = field(default_factory=dict)
 
 
 MaskedCloudResult = MaskedCloud | MeasurementFailure
+
+
+def _release(provider: object) -> None:
+    """Free a provider's model if it supports it (low-memory mode)."""
+    release = getattr(provider, "release", None)
+    if callable(release):
+        release()
+
+
+def _provider_version(provider: object) -> str:
+    """Best-effort identifier of a provider for the output diagnostics."""
+    for attr in ("version", "model_id", "checkpoint_path"):
+        val = getattr(provider, attr, None)
+        if val:
+            return str(val)
+    return type(provider).__name__
 
 
 def build_masked_cloud(
@@ -56,19 +81,39 @@ def build_masked_cloud(
     detector: Detector,
     segmenter: Segmenter,
     depth: DepthEstimator,
+    explicit_intrinsics: CameraIntrinsics | None = None,
+    exif_focal_px: float | None = None,
+    fallback_fov_deg: float | None = None,
+    release_models: bool = False,
 ) -> MaskedCloudResult:
-    """Run the M2 pipeline; return a MaskedCloud or a typed MeasurementFailure."""
+    """Run the M2 pipeline; return a MaskedCloud or a typed MeasurementFailure.
+
+    Intrinsics are resolved from the best available scale source (explicit / EXIF
+    / device profile / depth-model focal / fallback FOV); an assumed FOV is
+    flagged so confidence is penalized downstream.
+
+    ``release_models`` frees each model right after its stage so only one lives at
+    a time — needed to fit GDINO + SAM 2 + Depth Pro on a small GPU."""
     from .contracts import FailureCode
+
+    detector_version = _provider_version(detector)
+    segmenter_version = _provider_version(segmenter)
 
     stage_started = perf_counter()
     detections = detector.detect(image)
-    if not detections:
+    kind, target = classify_target(detections)
+    if kind == "multiple":
+        return MeasurementFailure(failure_code=FailureCode.MULTIPLE_TARGETS)
+    if kind == "none" or target is None:
         return MeasurementFailure(failure_code=FailureCode.NO_TARGET)
-    target = detector.select_target(detections)
+    if release_models:
+        _release(detector)
     detection_ms = (perf_counter() - stage_started) * 1000.0
 
     stage_started = perf_counter()
     mask = segmenter.segment(image, target.bbox_xyxy)
+    if release_models:
+        _release(segmenter)
     gate = validate_mask(mask)
     if gate is not None:
         return MeasurementFailure(failure_code=gate)
@@ -76,28 +121,58 @@ def build_masked_cloud(
 
     stage_started = perf_counter()
     depth_result = depth.estimate(image)
+    if release_models:
+        _release(depth)
     depth_ms = (perf_counter() - stage_started) * 1000.0
     stage_started = perf_counter()
     h, w = depth_result.depth_m.shape
-    intr = CameraIntrinsics.from_focal(depth_result.focal_px, w, h)
-    points = backproject_depth(depth_result.depth_m, intr, mask=mask)
+    # A model's focal is a trustworthy scale source only if it was predicted,
+    # not derived from an assumed FOV (Depth Anything V2) — see DepthResult.
+    depth_focal = None if depth_result.focal_is_assumed else depth_result.focal_px
+    resolved = resolve_intrinsics(
+        w,
+        h,
+        explicit=explicit_intrinsics,
+        exif_focal_px=exif_focal_px,
+        depth_focal_px=depth_focal,
+        fallback_fov_deg=fallback_fov_deg,
+    )
+    points = backproject_depth(depth_result.depth_m, resolved.intrinsics, mask=mask)
     if points.shape[0] < 50:  # not enough 3D support to measure anything
         return MeasurementFailure(failure_code=FailureCode.POINTCLOUD_SPARSE)
+
+    # Support-plane candidates: scene pixels around/below the object, object
+    # pixels excluded. Empty cloud -> measure_from_cloud fails SUPPORT_PLANE_NOT_FOUND.
+    support_mask = support_region_mask(mask)
+    support_points = (
+        np.empty((0, 3), dtype=float)
+        if support_mask is None
+        else backproject_depth(depth_result.depth_m, resolved.intrinsics, mask=support_mask)
+    )
 
     diagnostics = Diagnostics(
         extra={
             "mask_area_ratio": float(mask.mean()),
             "point_count": int(points.shape[0]),
+            "object_point_count_raw": int(points.shape[0]),
+            "support_candidate_point_count": int(support_points.shape[0]),
+            "support_region_area_ratio": 0.0 if support_mask is None else float(support_mask.mean()),
+            "support_region_strategy": "bbox_apron",
             "depth_valid_ratio": depth_result.valid_ratio,
-            "focal_px": depth_result.focal_px,
+            "focal_px": resolved.intrinsics.fx,
             "detector_reason": target.reason,
+            "detector_version": detector_version,
+            "segmenter_version": segmenter_version,
+            **resolved.to_dict(),
         }
     )
     return MaskedCloud(
-        points_m=points,
+        object_points_m=points,
+        support_points_m=support_points,
         mask=mask,
         detection=target,
         depth=depth_result,
+        support_mask=support_mask,
         diagnostics=diagnostics,
         timing_ms={
             "detection": detection_ms,
@@ -110,6 +185,8 @@ def build_masked_cloud(
 
 # Minimum object points below which a box fit isn't trustworthy.
 _MIN_OBJECT_POINTS = 30
+# Minimum support-surface points below which the floor plane can't be trusted.
+_MIN_SUPPORT_POINTS = 50
 
 
 def build_measurement(
@@ -119,10 +196,23 @@ def build_measurement(
     segmenter: Segmenter,
     depth: DepthEstimator,
     confidence: ConfidenceEstimator | None = None,
+    explicit_intrinsics: CameraIntrinsics | None = None,
+    exif_focal_px: float | None = None,
+    fallback_fov_deg: float | None = None,
+    release_models: bool = False,
 ) -> MeasurementResult:
     """Full M3 path: masked cloud -> support plane -> object -> L/W/H + confidence."""
     started = perf_counter()
-    cloud = build_masked_cloud(image, detector=detector, segmenter=segmenter, depth=depth)
+    cloud = build_masked_cloud(
+        image,
+        detector=detector,
+        segmenter=segmenter,
+        depth=depth,
+        explicit_intrinsics=explicit_intrinsics,
+        exif_focal_px=exif_focal_px,
+        fallback_fov_deg=fallback_fov_deg,
+        release_models=release_models,
+    )
     if isinstance(cloud, MeasurementFailure):
         return cloud
     outcome = measure_from_cloud(cloud, confidence=confidence)
@@ -146,20 +236,27 @@ def measure_from_cloud(
     from .contracts import FailureCode
 
     stage_started = perf_counter()
+    if cloud.support_points_m.shape[0] < _MIN_SUPPORT_POINTS:
+        return MeasurementFailure(failure_code=FailureCode.SUPPORT_PLANE_NOT_FOUND)
     try:
-        plane = fit_plane_ransac(cloud.points_m)
-        up = oriented_up(plane, cloud.points_m)
-        obj = segment_object_points(cloud.points_m, plane, up)
+        # Fit the floor from the support cloud only; object faces never vote.
+        plane = fit_plane_ransac(cloud.support_points_m)
+        up = oriented_up(plane, cloud.object_points_m)
+        obj = segment_object_points(cloud.object_points_m, plane, up)
         if obj.shape[0] < _MIN_OBJECT_POINTS:
             return MeasurementFailure(failure_code=FailureCode.GEOMETRY_DEGENERATE)
         dimensions = extract_supported_dimensions(obj, plane, up)
     except (ValueError, np.linalg.LinAlgError):
         return MeasurementFailure(failure_code=FailureCode.GEOMETRY_DEGENERATE)
 
+    support_inlier_ratio = float(plane.inlier_mask.mean())
     evidence = {
         **cloud.diagnostics.extra,
-        "plane_inlier_ratio": float(plane.inlier_mask.mean()),
+        "plane_inlier_ratio": support_inlier_ratio,  # confidence estimator reads this key
         "object_point_count": int(obj.shape[0]),
+        # Read-only diagnostics describing (never altering) the measurement above.
+        **geometry_diagnostics(obj, cloud.support_points_m, plane, up),
+        **image_space_diagnostics(cloud.mask, cloud.detection.bbox_xyxy),
     }
     estimator = confidence or HeuristicConfidenceEstimator()
     conf = estimator.estimate(evidence)
@@ -169,14 +266,20 @@ def measure_from_cloud(
     }
     timing_ms["total"] = sum(timing_ms.values())
 
+    assumptions = ["fx=fy, principal point at image centre"]
+    if evidence.get("intrinsics_assumed"):
+        fov = evidence.get("assumed_fov_deg")
+        assumptions.append(f"scale from assumed FOV ({fov} deg) — not measured")
+
     return MeasurementSuccess(
         dimensions=dimensions,
         confidence=conf,
-        diagnostics=Diagnostics(
-            assumptions=["fx=fy, principal point at image centre"],
-            extra=evidence,
-        ),
-        model_versions={"depth": cloud.depth.version},
+        diagnostics=Diagnostics(assumptions=assumptions, extra=evidence),
+        model_versions={
+            "depth": cloud.depth.version,
+            "detector": str(evidence.get("detector_version", "")),
+            "segmenter": str(evidence.get("segmenter_version", "")),
+        },
         timing_ms=timing_ms,
     )
 
@@ -266,6 +369,10 @@ def build_measurement_video(
     depth: DepthEstimator,
     stabilizer: TemporalStabilizer | None = None,
     confidence: ConfidenceEstimator | None = None,
+    explicit_intrinsics: CameraIntrinsics | None = None,
+    exif_focal_px: float | None = None,
+    fallback_fov_deg: float | None = None,
+    release_models: bool = False,
 ) -> MeasurementResult:
     """Measure each frame (M3) then temporally stabilize."""
     from .contracts import FailureCode
@@ -275,7 +382,15 @@ def build_measurement_video(
     started = perf_counter()
     results = [
         build_measurement(
-            f, detector=detector, segmenter=segmenter, depth=depth, confidence=confidence
+            f,
+            detector=detector,
+            segmenter=segmenter,
+            depth=depth,
+            confidence=confidence,
+            explicit_intrinsics=explicit_intrinsics,
+            exif_focal_px=exif_focal_px,
+            fallback_fov_deg=fallback_fov_deg,
+            release_models=release_models,
         )
         for f in frames
     ]

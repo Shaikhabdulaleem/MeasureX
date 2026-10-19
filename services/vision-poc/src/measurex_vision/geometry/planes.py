@@ -74,8 +74,13 @@ def fit_plane_ransac(
     inliers = np.abs(p @ best_normal + best_offset) < threshold_m
     pts = p[inliers]
     centroid = pts.mean(axis=0)
-    _, _, vh = np.linalg.svd(pts - centroid)
-    normal = vh[-1]
+    # Smallest-eigenvector of the 3x3 point covariance == smallest right
+    # singular vector of (pts - centroid), without materialising the N x N U
+    # that full-matrix SVD on a huge masked cloud would (host-RAM OOM).
+    centered = pts - centroid
+    covariance = (centered.T @ centered) / max(1, centered.shape[0] - 1)
+    eigenvalues, eigenvectors = np.linalg.eigh(covariance)
+    normal = eigenvectors[:, np.argmin(eigenvalues)]
     normal = normal / np.linalg.norm(normal)
     offset = float(-normal @ centroid)
     inlier_mask = np.abs(p @ normal + offset) < threshold_m
