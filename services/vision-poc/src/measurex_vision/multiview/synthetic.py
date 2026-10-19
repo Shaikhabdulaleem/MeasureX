@@ -79,6 +79,7 @@ def synthetic_capture(
     # footprint. Fewer/higher rings leave a pyramidal over-reconstruction above the
     # top face (no camera sees straight down). Coverage choice, not a GT fit.
     elevations_deg: tuple[float, ...] = (8.0, 35.0, 60.0),
+    continuous_sweep: bool = False,
     image_wh: tuple[int, int] = (960, 1280),
     fx: float = 1004.5988,
     fy: float | None = None,
@@ -93,7 +94,12 @@ def synthetic_capture(
 
     ``scale`` multiplies every metric quantity (box, distance, origin) so the
     scene and the camera translations scale together — the masks are unchanged and
-    the recovered dimensions must scale by the same factor (metric-scale proof)."""
+    the recovered dimensions must scale by the same factor (metric-scale proof).
+
+    ``continuous_sweep`` models one practical hand-held pass instead of full
+    elevation rings: ``n_views`` are laid along the azimuth span with the elevation
+    ramping linearly between ``elevations_deg[0]`` and ``elevations_deg[-1]`` (a
+    modest natural tilt through the sweep), not the Cartesian product of rings."""
     w, h = image_wh
     fy = fy if fy is not None else fx
     intr = CameraIntrinsics(fx=fx, fy=fy, cx=w / 2.0, cy=h / 2.0)
@@ -121,22 +127,24 @@ def synthetic_capture(
     azimuths = np.linspace(
         -azimuth_span_deg / 2, azimuth_span_deg / 2, n_views, endpoint=not full_ring
     )
-    i = 0
-    for elevation_deg in elevations_deg:
+    if continuous_sweep:
+        ramp = np.linspace(elevations_deg[0], elevations_deg[-1], n_views)
+        view_angles = list(zip(ramp.tolist(), azimuths.tolist(), strict=True))
+    else:
+        view_angles = [(e, a) for e in elevations_deg for a in azimuths]
+    for i, (elevation_deg, az_deg) in enumerate(view_angles):
         elev = np.radians(elevation_deg)
-        for az_deg in azimuths:
-            az = np.radians(az_deg)
-            horiz = np.cos(az) * a0 + np.sin(az) * b0
-            direction = np.cos(elev) * horiz + np.sin(elev) * up
-            eye = centre + dist * direction
-            T = look_at_pose(eye, centre, up)
-            if pose_noise_deg > 0:
-                T[:3, :3] = _small_rotation(seed + i, pose_noise_deg) @ T[:3, :3]
-            P = cam.projection_matrix(intr, T)
-            px, _ = cam.project_world(P, corners)
-            mask = fill_convex_polygon(px, w, h)
-            frames.append(ViewFrame(frame_id=f"{i:06d}", mask=mask, intrinsics=intr, T_world_from_camera=T))
-            i += 1
+        az = np.radians(az_deg)
+        horiz = np.cos(az) * a0 + np.sin(az) * b0
+        direction = np.cos(elev) * horiz + np.sin(elev) * up
+        eye = centre + dist * direction
+        T = look_at_pose(eye, centre, up)
+        if pose_noise_deg > 0:
+            T[:3, :3] = _small_rotation(seed + i, pose_noise_deg) @ T[:3, :3]
+        P = cam.projection_matrix(intr, T)
+        px, _ = cam.project_world(P, corners)
+        mask = fill_convex_polygon(px, w, h)
+        frames.append(ViewFrame(frame_id=f"{i:06d}", mask=mask, intrinsics=intr, T_world_from_camera=T))
 
     gt = {
         "length_mm": round(max(L, W) * 1000),
@@ -185,6 +193,8 @@ def save_bundle(bundle: CaptureBundle, out_dir: str) -> str:
         "gravity_world": [float(x) for x in bundle.gravity_world],
         "frames": doc_frames,
     }
+    if bundle.support_plane is not None:
+        doc["support_plane"] = bundle.support_plane
     path = os.path.join(out_dir, "capture.json")
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(doc, fh, indent=2)

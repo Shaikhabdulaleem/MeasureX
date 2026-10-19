@@ -94,14 +94,17 @@ def carve(
     *,
     consensus: float,
     max_voxels: int,
+    min_usable_views: int = 1,
     support_plane: dict | None = None,
 ) -> CarveResult:
     """Carve the box ``[lo, hi]`` against every frame's silhouette.
 
     For each voxel, a frame is *usable* if the voxel projects in front of the
     camera and inside the image; the voxel *agrees* with that frame if it also
-    lands inside the mask. A voxel survives when ``agree / usable >= consensus``
-    (so a minority of masks with minor errors cannot delete a real voxel)."""
+    lands inside the mask. A voxel survives when it is seen by at least
+    ``min_usable_views`` frames and ``agree / usable >= consensus`` (so a minority
+    of masks with minor errors cannot delete a real voxel, and a voxel constrained
+    by only a single ray — unobservable in depth — cannot belong to the hull)."""
     centres = _support_filter(_grid_centres(lo, hi, voxel, max_voxels), support_plane, voxel)
     initial = centres.shape[0]
     if initial == 0:
@@ -123,7 +126,7 @@ def carve(
 
     with np.errstate(invalid="ignore", divide="ignore"):
         ratio = np.where(usable > 0, agree / np.maximum(usable, 1), 0.0)
-    occupied = (usable > 0) & (ratio >= consensus)
+    occupied = (usable >= max(min_usable_views, 1)) & (ratio >= consensus)
     pts = centres[occupied]
 
     # Per-frame silhouette agreement over the surviving voxels (diagnostic).
@@ -156,6 +159,7 @@ def reconstruct_hull(bundle: CaptureBundle, config: ReconstructionConfig) -> Car
     coarse = carve(
         bundle.frames, lo, hi, coarse_voxel,
         consensus=config.consensus, max_voxels=config.max_voxels,
+        min_usable_views=config.min_usable_views,
         support_plane=bundle.support_plane,
     )
     if coarse.points_m.shape[0] < config.min_occupied_voxels:
@@ -172,6 +176,7 @@ def reconstruct_hull(bundle: CaptureBundle, config: ReconstructionConfig) -> Car
     fine = carve(
         bundle.frames, flo, fhi, fine_voxel,
         consensus=config.consensus, max_voxels=config.max_voxels,
+        min_usable_views=config.min_usable_views,
         support_plane=bundle.support_plane,
     )
     if fine.points_m.shape[0] < config.min_occupied_voxels:

@@ -18,6 +18,7 @@ import numpy as np
 from . import camera as cam
 from .schema import (
     CaptureBundle,
+    FailureCode,
     MetricReconstructionError,
     ReconstructionConfig,
     ViewFrame,
@@ -94,6 +95,28 @@ def leave_one_out_spread(
         "spread_frac": {"length": float(frac[0]), "width": float(frac[1]), "height": float(frac[2])},
         "spread_frac_max": float(frac.max()),
     }
+
+
+def gate_failure(
+    metrics: dict[str, Any],
+    loo: dict[str, Any],
+    config: ReconstructionConfig,
+) -> FailureCode | None:
+    """The typed failure a METRIC result must return when the geometry is not
+    observable enough, or ``None`` when the quality gates pass.
+
+    Frame-count / baseline / view-coverage gates are enforced earlier (in
+    :func:`~.schema.validate_bundle`); here we gate on the two evidence sources
+    that need the carved hull: per-frame silhouette consistency and leave-one-out
+    dimension stability. A result that fails either is refused, never returned as a
+    successful metric measurement. Thresholds are object-independent (never fit to
+    a test carton)."""
+    if metrics["silhouette_agreement_min"] < config.min_silhouette_consistency:
+        return FailureCode.INSUFFICIENT_SILHOUETTE_CONSISTENCY
+    spread_max = loo.get("spread_frac_max")
+    if spread_max is not None and spread_max > config.max_dim_spread_frac:
+        return FailureCode.UNSTABLE_RECONSTRUCTION
+    return None
 
 
 def assess(

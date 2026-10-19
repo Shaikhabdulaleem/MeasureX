@@ -1,20 +1,31 @@
 """M9 synthetic metric-reconstruction proof.
 
 Runs the multi-view visual hull on analytically generated cuboid captures with
-exact metric poses and reports GT vs reconstructed L/W/H, metric-scale
-equivariance, and the typed-failure behaviour. No GPU, no model, no network.
+known metric poses and reports, as SEPARATE experiments:
 
-    python scripts/m9_synthetic_proof.py            # table to stdout
+  1. EXACT-POSE full-coverage sanity test  (3 elevation rings, 330 deg azimuth) —
+     a generous geometry check, NOT the warehouse workflow.
+  2. POSE-NOISE robustness                 (same geometry, controlled rotation
+     perturbations) — kept apart from the exact-pose aggregate.
+  3. PRACTICAL SHORT-SWEEP matrix          (one continuous pass: few frames over a
+     small azimuth span) — representative of a hand-held capture; finds the
+     minimum geometrically observable pattern.
+  4. RESOLUTION CONVERGENCE                 (does error shrink toward GT as the
+     voxel shrinks, or is the floor set by hull/coverage geometry?).
+  5. VOXEL QUANTIZATION analysis            (error in voxels, per dimension).
+
+No GPU, no model, no network. Nothing here reads ground truth inside the
+reconstruction — GT is compared only after the fact. No correction factor, no
+dimension multiplier, and the known carton size never enters reconstruction.
+
+    python scripts/m9_synthetic_proof.py            # tables to stdout
     python scripts/m9_synthetic_proof.py --out DIR  # also write md/json + debug
-
-This is the research proof gate: the geometry must recover cuboid dimensions on
-exact synthetic poses before any phone capture. Nothing here reads ground truth
-inside the reconstruction — GT is compared only after the fact.
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import os
 import sys
@@ -29,53 +40,143 @@ from measurex_vision.multiview.pipeline import reconstruct_from_provider
 from measurex_vision.multiview.pose_provider import ARCoreMetricPoseProvider
 from measurex_vision.multiview.synthetic import synthetic_capture
 
+REAL_CARTON = (0.345, 0.290, 0.245)  # the physical test carton (mm: 345/290/245)
+
 # (name, length_m, width_m, height_m) — a range of sizes/aspect ratios, NOT only
-# the real 345x290x245 test carton.
+# the real test carton.
 BOXES = [
     ("small parcel", 0.200, 0.150, 0.120),
-    ("real carton", 0.345, 0.290, 0.245),
+    ("real carton", *REAL_CARTON),
     ("medium carton", 0.600, 0.400, 0.350),
     ("large carton", 0.800, 0.600, 0.500),
     ("tall narrow", 0.250, 0.240, 0.800),
 ]
-# Three independent "sweeps" per carton: different yaw, world origin and seed.
-SWEEPS = [
-    {"yaw_deg": 0.0, "world_origin": (0.0, 0.0, 0.0), "pose_noise_deg": 0.0, "seed": 1},
-    {"yaw_deg": 37.0, "world_origin": (0.6, 0.0, -0.4), "pose_noise_deg": 0.0, "seed": 2},
-    {"yaw_deg": -62.0, "world_origin": (-0.3, 0.0, 0.5), "pose_noise_deg": 0.15, "seed": 3},
+# EXACT POSE: three independent full-coverage sweeps, pose_noise_deg == 0 for all.
+EXACT_SWEEPS = [
+    {"yaw_deg": 0.0, "world_origin": (0.0, 0.0, 0.0), "seed": 1},
+    {"yaw_deg": 37.0, "world_origin": (0.6, 0.0, -0.4), "seed": 2},
+    {"yaw_deg": -62.0, "world_origin": (-0.3, 0.0, 0.5), "seed": 3},
+]
+# POSE NOISE robustness: explicit controlled per-frame rotation perturbations,
+# reported separately — never mixed into the exact-pose accuracy aggregate.
+NOISE_SWEEPS = [
+    {"pose_noise_deg": 0.15, "seed": 11},
+    {"pose_noise_deg": 0.30, "seed": 12},
+    {"pose_noise_deg": 0.50, "seed": 13},
 ]
 
 
-def _err(pred: dict, gt: dict) -> dict:
+def _err_pct(pred: dict, gt: dict) -> dict:
     return {k: 100.0 * (pred[k] - gt[k]) / gt[k] for k in gt}
 
 
-def run_table(config: ReconstructionConfig) -> tuple[list[dict], dict]:
+def _aggregate(rows: list[dict]) -> dict:
+    abs_pcts = [abs(v) for r in rows if "err_pct" in r for v in r["err_pct"].values()]
+    return {
+        "sequences": len(rows),
+        "accepted": sum("err_pct" in r for r in rows),
+        "median_abs_pct": float(np.median(abs_pcts)) if abs_pcts else None,
+        "p90_abs_pct": float(np.percentile(abs_pcts, 90)) if abs_pcts else None,
+        "p95_abs_pct": float(np.percentile(abs_pcts, 95)) if abs_pcts else None,
+        "max_abs_pct": float(np.max(abs_pcts)) if abs_pcts else None,
+    }
+
+
+def run_group(config: ReconstructionConfig, sweeps: list[dict]) -> tuple[list[dict], dict]:
+    """Reconstruct every (box, sweep) full-coverage capture; return rows + agg."""
     rows: list[dict] = []
     for name, L, W, H in BOXES:
-        for si, sw in enumerate(SWEEPS):
+        for si, sw in enumerate(sweeps):
             bundle, gt = synthetic_capture(length_m=L, width_m=W, height_m=H, **sw)
             t = time.perf_counter()
             r = reconstruct(bundle, config)
             dt = time.perf_counter() - t
-            row = {"carton": name, "sweep": si, "frames": len(bundle.frames), "gt": gt, "runtime_s": round(dt, 2)}
+            row = {"carton": name, "sweep": si, "frames": len(bundle.frames),
+                   "gt": gt, "runtime_s": round(dt, 2), **{k: v for k, v in sw.items() if k != "world_origin"}}
             if r["success"]:
                 row["pred"] = r["dimensions"]
-                row["err_pct"] = _err(r["dimensions"], gt)
+                row["err_pct"] = _err_pct(r["dimensions"], gt)
                 row["quality"] = r["quality"]["level"]
             else:
                 row["reason"] = r["reason"]
             rows.append(row)
-    abs_pcts = [abs(v) for row in rows if "err_pct" in row for v in row["err_pct"].values()]
-    agg = {
-        "sequences": len(rows),
-        "accepted": sum("err_pct" in r for r in rows),
-        "median_abs_pct": float(np.median(abs_pcts)),
-        "p90_abs_pct": float(np.percentile(abs_pcts, 90)),
-        "p95_abs_pct": float(np.percentile(abs_pcts, 95)),
-        "max_abs_pct": float(np.max(abs_pcts)),
+    return rows, _aggregate(rows)
+
+
+def short_sweep_matrix(config: ReconstructionConfig) -> list[dict]:
+    """One continuous hand-held pass (single ring, modest elevation ramp) over a
+    small azimuth span, for the real carton. Finds the minimum observable pattern.
+    Not tuned to GT — the capture geometry is varied, the algorithm is fixed."""
+    L, W, H = REAL_CARTON
+    rows: list[dict] = []
+    for frames in (6, 8, 10, 12):
+        for span in (30.0, 45.0, 60.0, 90.0, 120.0):
+            bundle, gt = synthetic_capture(
+                length_m=L, width_m=W, height_m=H, n_views=frames,
+                azimuth_span_deg=span, elevations_deg=(15.0, 40.0),
+                continuous_sweep=True, image_wh=(540, 720), distance_m=1.3,
+            )
+            t = time.perf_counter()
+            r = reconstruct(bundle, config)
+            dt = time.perf_counter() - t
+            row = {"frames": frames, "azimuth_span_deg": span, "runtime_s": round(dt, 2)}
+            if r["success"]:
+                d = r["diagnostics"]
+                row.update(
+                    accepted=True,
+                    pred=r["dimensions"],
+                    err_pct=_err_pct(r["dimensions"], gt),
+                    total_baseline_mm=round(d["total_baseline_mm"]),
+                    max_view_angle_deg=round(d["max_view_angle_deg"], 1),
+                    voxel_mm=round(d["voxel_size_m"] * 1000, 1),
+                    loo_spread_max=r["quality"]["leave_one_out"].get("spread_frac_max"),
+                )
+            else:
+                row.update(accepted=False, reason=r["reason"],
+                           debug=r.get("debug_dimensions_mm"))
+            rows.append(row)
+    return rows
+
+
+def resolution_convergence(base: ReconstructionConfig) -> list[dict]:
+    """Real carton, full exact-pose coverage, increasing fine resolution. Reports
+    whether error converges toward GT as the voxel shrinks."""
+    bundle, gt = synthetic_capture(length_m=REAL_CARTON[0], width_m=REAL_CARTON[1], height_m=REAL_CARTON[2])
+    rows: list[dict] = []
+    for fine in (60, 90, 120, 160):
+        cfg = dataclasses.replace(base, fine_divisions=fine, leave_one_out=False)
+        t = time.perf_counter()
+        r = reconstruct(bundle, cfg)
+        dt = time.perf_counter() - t
+        d = r["diagnostics"]
+        pred = r["dimensions"]
+        rows.append({
+            "fine_divisions": fine,
+            "voxel_mm": round(d["voxel_size_m"] * 1000, 2),
+            "pred": pred,
+            "abs_err_mm": {k: abs(pred[k] - gt[k]) for k in gt},
+            "max_abs_pct": max(abs(100.0 * (pred[k] - gt[k]) / gt[k]) for k in gt),
+            "final_voxels": d["final_occupied_voxels"],
+            "runtime_s": round(dt, 2),
+            "gt": gt,
+        })
+    return rows
+
+
+def quantization_analysis(conv_rows: list[dict]) -> dict:
+    """At the finest resolution, express each dimension's residual error in voxels
+    (abs_err_mm / voxel_mm). An error that stays many voxels large as the voxel
+    shrinks is hull/coverage geometry, not quantization."""
+    fine = conv_rows[-1]
+    voxel = fine["voxel_mm"]
+    return {
+        "fine_divisions": fine["fine_divisions"],
+        "voxel_mm": voxel,
+        "per_dim": {
+            k: {"abs_err_mm": fine["abs_err_mm"][k], "error_in_voxels": round(fine["abs_err_mm"][k] / voxel, 2)}
+            for k in fine["gt"]
+        },
     }
-    return rows, agg
 
 
 def scale_equivariance(config: ReconstructionConfig) -> dict:
@@ -88,45 +189,85 @@ def scale_equivariance(config: ReconstructionConfig) -> dict:
 
 def failure_demos(config: ReconstructionConfig) -> dict:
     out = {}
-    # Low baseline: identical poses.
     b, _ = synthetic_capture(length_m=0.3, width_m=0.25, height_m=0.2, n_views=5, elevations_deg=(30,))
-    import dataclasses
     f0 = b.frames[0]
     dup = dataclasses.replace(b, frames=[dataclasses.replace(f0, frame_id=str(i)) for i in range(5)])
     out["low_baseline"] = reconstruct(dup, config)["reason"]
-    # Low view coverage: tiny arc.
     bb, _ = synthetic_capture(length_m=0.3, width_m=0.25, height_m=0.2, n_views=6, elevations_deg=(30,), azimuth_span_deg=3.0, distance_m=3.0)
     cfg2 = dataclasses.replace(config, min_total_baseline_m=0.001, min_view_coverage_deg=20)
     out["low_coverage"] = reconstruct(bb, cfg2)["reason"]
-    # Memory guard.
     bc, _ = synthetic_capture(length_m=0.3, width_m=0.25, height_m=0.2)
     out["memory_guard"] = reconstruct(bc, dataclasses.replace(config, max_voxels=1000))["reason"]
-    # No metric pose.
     out["metric_pose_unavailable"] = reconstruct_from_provider(ARCoreMetricPoseProvider(), config)["reason"]
+    # Quality gate: a stable capture with an impossibly tight spread threshold must
+    # fail typed rather than return a successful metric measurement.
+    bd, _ = synthetic_capture(length_m=0.345, width_m=0.290, height_m=0.245)
+    gated = dataclasses.replace(config, leave_one_out=True, leave_one_out_max_runs=4, max_dim_spread_frac=1e-6)
+    out["unstable_reconstruction"] = reconstruct(bd, gated)["reason"]
     return out
 
 
-def render_markdown(rows, agg, scale, failures) -> str:
-    lines = ["# M9 synthetic proof\n", "## GT vs reconstructed (exact metric poses)\n"]
-    lines.append("| carton | sweep | frames | GT L/W/H (mm) | pred L/W/H (mm) | err% L/W/H | quality | s |")
-    lines.append("|---|---|---|---|---|---|---|---|")
+def _dims(d: dict) -> str:
+    return f"{d['length_mm']}/{d['width_mm']}/{d['height_mm']}"
+
+
+def _group_table(title: str, rows: list[dict], agg: dict) -> list[str]:
+    lines = [f"### {title}\n",
+             "| carton | sweep | frames | noise deg | GT L/W/H | pred L/W/H | err% L/W/H | quality | s |",
+             "|---|---|---|---|---|---|---|---|---|"]
     for r in rows:
-        gt = r["gt"]
-        g = f"{gt['length_mm']}/{gt['width_mm']}/{gt['height_mm']}"
+        noise = r.get("pose_noise_deg", 0.0)
         if "pred" in r:
-            p = r["pred"]
-            pm = f"{p['length_mm']}/{p['width_mm']}/{p['height_mm']}"
             e = r["err_pct"]
             em = f"{e['length_mm']:+.1f}/{e['width_mm']:+.1f}/{e['height_mm']:+.1f}"
-            lines.append(f"| {r['carton']} | {r['sweep']} | {r['frames']} | {g} | {pm} | {em} | {r['quality']} | {r['runtime_s']} |")
+            lines.append(f"| {r['carton']} | {r['sweep']} | {r['frames']} | {noise} | {_dims(r['gt'])} | {_dims(r['pred'])} | {em} | {r['quality']} | {r['runtime_s']} |")
         else:
-            lines.append(f"| {r['carton']} | {r['sweep']} | {r['frames']} | {g} | FAIL: {r['reason']} | | | {r['runtime_s']} |")
-    lines.append(
-        f"\n**Aggregate (abs % error, all dims):** median {agg['median_abs_pct']:.2f}% · "
-        f"P90 {agg['p90_abs_pct']:.2f}% · P95 {agg['p95_abs_pct']:.2f}% · max {agg['max_abs_pct']:.2f}% · "
-        f"accepted {agg['accepted']}/{agg['sequences']}\n"
-    )
-    lines.append("## Metric-scale equivariance (2x scene+poses -> 2x dims)\n")
+            lines.append(f"| {r['carton']} | {r['sweep']} | {r['frames']} | {noise} | {_dims(r['gt'])} | FAIL: {r['reason']} | | | {r['runtime_s']} |")
+    a = agg
+    if a["median_abs_pct"] is not None:
+        lines.append(
+            f"\n**Aggregate (abs % error, all dims):** median {a['median_abs_pct']:.2f}% · "
+            f"P90 {a['p90_abs_pct']:.2f}% · P95 {a['p95_abs_pct']:.2f}% · max {a['max_abs_pct']:.2f}% · "
+            f"accepted {a['accepted']}/{a['sequences']}\n"
+        )
+    return lines
+
+
+def render_markdown(exact, exact_agg, noise, noise_agg, matrix, conv, quant, scale, failures) -> str:
+    lines = ["# M9 synthetic proof\n"]
+    lines += _group_table("1. EXACT POSE — full-coverage sanity test (pose_noise = 0)", exact, exact_agg)
+    lines += _group_table("2. POSE-NOISE robustness (controlled perturbations)", noise, noise_agg)
+
+    lines.append("## 3. PRACTICAL SHORT-SWEEP matrix (real carton, one continuous pass)\n")
+    lines.append("| frames | azim span | accepted | pred L/W/H | err% L/W/H | baseline mm | coverage deg | voxel mm | LOO spread | s |")
+    lines.append("|---|---|---|---|---|---|---|---|---|---|")
+    for r in matrix:
+        if r["accepted"]:
+            e = r["err_pct"]
+            em = f"{e['length_mm']:+.1f}/{e['width_mm']:+.1f}/{e['height_mm']:+.1f}"
+            sp = r["loo_spread_max"]
+            sp = f"{sp:.3f}" if sp is not None else "—"
+            lines.append(f"| {r['frames']} | {r['azimuth_span_deg']:.0f} | yes | {_dims(r['pred'])} | {em} | {r['total_baseline_mm']} | {r['max_view_angle_deg']} | {r['voxel_mm']} | {sp} | {r['runtime_s']} |")
+        else:
+            dbg = f" (debug {_dims(r['debug'])})" if r.get("debug") else ""
+            lines.append(f"| {r['frames']} | {r['azimuth_span_deg']:.0f} | **no** | FAIL: {r['reason']}{dbg} | | | | | | {r['runtime_s']} |")
+
+    lines.append("\n## 4. RESOLUTION CONVERGENCE (real carton, exact poses, full coverage)\n")
+    lines.append("| fine_divisions | voxel mm | pred L/W/H | abs err L/W/H mm | max abs % | final voxels | s |")
+    lines.append("|---|---|---|---|---|---|---|")
+    for r in conv:
+        ae = r["abs_err_mm"]
+        aem = f"{ae['length_mm']}/{ae['width_mm']}/{ae['height_mm']}"
+        lines.append(f"| {r['fine_divisions']} | {r['voxel_mm']} | {_dims(r['pred'])} | {aem} | {r['max_abs_pct']:.1f}% | {r['final_voxels']} | {r['runtime_s']} |")
+
+    lines.append("\n## 5. VOXEL QUANTIZATION analysis (finest resolution)\n")
+    lines.append(f"voxel = {quant['voxel_mm']} mm (fine_divisions={quant['fine_divisions']})\n")
+    lines.append("| dimension | abs err mm | error in voxels |")
+    lines.append("|---|---|---|")
+    for k, v in quant["per_dim"].items():
+        lines.append(f"| {k} | {v['abs_err_mm']} | {v['error_in_voxels']} |")
+
+    lines.append("\n## Metric-scale equivariance (2x scene+poses -> 2x dims)\n")
     lines.append(f"scale1 = {scale['scale1_mm']}\n\nscale2 = {scale['scale2_mm']}\n\nratios = {scale['ratios']}\n")
     lines.append("## Typed failure behaviour\n")
     for k, v in failures.items():
@@ -140,11 +281,18 @@ def main() -> int:
     ap.add_argument("--fine-divisions", type=int, default=90)
     args = ap.parse_args()
 
-    config = ReconstructionConfig(fine_divisions=args.fine_divisions, leave_one_out=False)
-    rows, agg = run_table(config)
-    scale = scale_equivariance(config)
-    failures = failure_demos(config)
-    md = render_markdown(rows, agg, scale, failures)
+    base = ReconstructionConfig(fine_divisions=args.fine_divisions, leave_one_out=False)
+    gated = dataclasses.replace(base, leave_one_out=True, leave_one_out_max_runs=4)
+
+    exact, exact_agg = run_group(base, EXACT_SWEEPS)
+    noise, noise_agg = run_group(base, NOISE_SWEEPS)
+    matrix = short_sweep_matrix(gated)
+    conv = resolution_convergence(base)
+    quant = quantization_analysis(conv)
+    scale = scale_equivariance(base)
+    failures = failure_demos(base)
+
+    md = render_markdown(exact, exact_agg, noise, noise_agg, matrix, conv, quant, scale, failures)
     print(md)
 
     if args.out:
@@ -152,10 +300,17 @@ def main() -> int:
         with open(os.path.join(args.out, "proof_table.md"), "w", encoding="utf-8") as fh:
             fh.write(md)
         with open(os.path.join(args.out, "proof.json"), "w", encoding="utf-8") as fh:
-            json.dump({"rows": rows, "aggregate": agg, "scale": scale, "failures": failures}, fh, indent=2)
-        # One debug run (with leave-one-out) for artifact inspection.
+            json.dump({
+                "exact_pose": {"rows": exact, "aggregate": exact_agg},
+                "pose_noise": {"rows": noise, "aggregate": noise_agg},
+                "short_sweep_matrix": matrix,
+                "resolution_convergence": conv,
+                "quantization": quant,
+                "scale": scale,
+                "failures": failures,
+            }, fh, indent=2)
         b, _ = synthetic_capture(length_m=0.345, width_m=0.290, height_m=0.245)
-        reconstruct(b, ReconstructionConfig(fine_divisions=args.fine_divisions), debug_dir=os.path.join(args.out, "debug_real_carton"))
+        reconstruct(b, base, debug_dir=os.path.join(args.out, "debug_real_carton"))
     return 0
 
 

@@ -13,7 +13,7 @@ import time
 from typing import Any
 
 from .carton import carton_dimensions, largest_component
-from .quality import assess, leave_one_out_spread, observability_metrics
+from .quality import assess, gate_failure, leave_one_out_spread, observability_metrics
 from .schema import (
     CaptureBundle,
     FailureCode,
@@ -83,6 +83,21 @@ def reconstruct(
         loo = leave_one_out_spread(bundle, config, lambda fs: _reconstruct_dims_m(_bundle_with(bundle, fs), config))
         timings["leave_one_out_ms"] = (time.perf_counter() - t3) * 1000
     quality = assess(metrics, loo, config)
+
+    # A METRIC result must fail when the geometry is not observable enough. The
+    # diagnostic dimensions are retained for debug, but the public result is a
+    # typed failure — never a successful metric measurement on weak geometry.
+    gate = gate_failure(metrics, loo, config)
+    if gate is not None:
+        return {
+            "success": False,
+            "measurement_tier": "metric",
+            "reason": gate.value,
+            "detail": f"quality gate failed: level={quality.level}",
+            "frames_total": frames_total,
+            "debug_dimensions_mm": geo.dimensions.to_dict(),
+            "quality": quality.to_dict(),
+        }
 
     diagnostics: dict[str, Any] = {
         "pose_source": bundle.pose_source,

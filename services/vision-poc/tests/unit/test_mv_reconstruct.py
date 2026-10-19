@@ -1,8 +1,11 @@
 """M9 end-to-end metric reconstruction on synthetic exact-pose captures.
 
-Fast CI configuration (moderate resolution) — the ``<=2%`` headline accuracy is
-demonstrated by ``scripts/m9_synthetic_proof.py``; here we prove the geometry is
-correct, metric scale comes from the poses, and failures are handled."""
+Fast CI configuration (moderate resolution). This proves the geometry is correct,
+metric scale comes from the poses, and failures are handled — NOT a headline
+accuracy figure. ``scripts/m9_synthetic_proof.py`` reports the actual exact-pose
+error distribution (a small consistent over-estimate, median ~3% on the current
+visual hull, which does NOT meet the ~2% exact-pose target — see
+``docs/M9_MULTIVIEW_METRIC_SPIKE.md``)."""
 
 from __future__ import annotations
 
@@ -34,8 +37,9 @@ def test_recovers_dimensions_within_tolerance(dims):
     result = reconstruct(bundle, CFG)
     assert result["success"], result
     pred = result["dimensions"]
-    # Coarse CI config (fine_divisions=60); the tight <=2-3% accuracy is shown by
-    # scripts/m9_synthetic_proof.py. Here we assert correct recovery, not SLA.
+    # Coarse CI config (fine_divisions=60). The actual exact-pose error
+    # distribution (~3% median, not <=2%) is reported by
+    # scripts/m9_synthetic_proof.py; here we assert correct recovery, not an SLA.
     for k in gt:
         err = abs(pred[k] - gt[k]) / gt[k]
         assert err <= 0.09, f"{k}: pred {pred[k]} gt {gt[k]} ({err:.1%})"
@@ -79,6 +83,25 @@ def test_robust_to_one_oversized_mask():
     assert result["success"], result
     for k in gt:
         assert abs(result["dimensions"][k] - gt[k]) / gt[k] <= 0.09
+
+
+def test_resolution_sweep_shrinks_voxels_without_diverging():
+    """A finer grid must use a smaller voxel and keep more occupied voxels, while
+    the recovered dimensions stay in a stable band (they do NOT keep converging to
+    GT — the residual error floors on hull/coverage geometry, not quantisation, as
+    scripts/m9_synthetic_proof.py reports in full). GT-independent band check."""
+    bundle, gt = _capture((0.345, 0.290, 0.245))
+    runs = {}
+    for fine in (40, 60):
+        cfg = dataclasses.replace(CFG, fine_divisions=fine)
+        r = reconstruct(bundle, cfg)
+        assert r["success"], r
+        d = r["diagnostics"]
+        max_err = max(abs(r["dimensions"][k] - gt[k]) / gt[k] for k in gt)
+        runs[fine] = (d["voxel_size_m"], d["final_occupied_voxels"], max_err)
+    assert runs[60][0] < runs[40][0]                 # finer voxel
+    assert runs[60][1] > runs[40][1]                 # more voxels
+    assert runs[40][2] <= 0.06 and runs[60][2] <= 0.06  # stable band, no divergence
 
 
 def test_leave_one_out_reports_spread():

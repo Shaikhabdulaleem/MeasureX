@@ -98,10 +98,12 @@ masks + intrinsics + metric poses
 ```
 
 - **Carving** ([`visual_hull.py`](../src/measurex_vision/multiview/visual_hull.py)):
-  a voxel survives when it projects in front of the camera, inside the image and
-  inside the mask for a `consensus` fraction of the frames that can see it.
-  `consensus = 1.0` is the true visual hull (intersection); lower it only for
-  noisy real masks (it inflates the hull).
+  a voxel survives when it is seen by at least `min_usable_views` frames (default
+  **2**) and projects inside the mask for a `consensus` fraction of the frames that
+  can see it. `consensus = 1.0` is the true visual hull (intersection); lower it
+  only for noisy real masks (it inflates the hull). The `min_usable_views` rule is
+  GT-independent: a voxel constrained by a single camera ray is unobservable in
+  depth along that ray, so one-view survivors cannot belong to a metric hull.
 - **ROI** is derived from rays/frusta, never from a known carton size, with a hard
   `roi_max_half_extent_m` cap and a `max_voxels` memory guard.
 - **Resolution is adaptive** (`coarse/fine_divisions`): voxel size scales with the
@@ -130,59 +132,118 @@ silhouette agreement, and **leave-one-out** stability (reconstruct repeatedly
 dropping one frame; report the relative L/W/H spread). Thresholds are explicit and
 object-independent.
 
+**The gate is enforced, not advisory.** A METRIC result is refused
+(`success=False`) when silhouette consistency is below `min_silhouette_consistency`
+(→ `insufficient_silhouette_consistency`) or the leave-one-out spread exceeds
+`max_dim_spread_frac` (→ `unstable_reconstruction`). Diagnostic dimensions are
+retained in the failure payload (`debug_dimensions_mm`) for inspection, but the
+public result never reports dimensions on weak geometry. (Leave-one-out spread is a
+*necessary* not *sufficient* check — see the short-sweep finding below, where a
+tight ring produces a low spread yet a grossly wrong length.)
+
+## Capture-manifest contract (strict)
+
+[`load_bundle`](../src/measurex_vision/multiview/schema.py) raises a typed
+`ContractError` for any bundle that is not a well-formed METRIC capture: wrong
+`schema_version`, `measurement_tier != "metric"`, wrong `pose_convention`/`units`,
+a non-list/empty `frames`, or a missing/dimension-mismatched image or mask file. An
+ESTIMATE manifest is rejected here — never silently accepted as METRIC. An optional
+`support_plane` is validated (finite non-zero normal, finite offset, within 45° of
+gravity-up — a floor, not an arbitrary tilt).
+
 ## Failure modes (typed — never a silent downgrade)
 
 `metric_pose_unavailable`, `invalid_pose`, `invalid_intrinsics`,
 `insufficient_frames`, `insufficient_baseline`, `insufficient_view_coverage`,
-`invalid_gravity`, `mask_mismatch`, `reconstruction_failed`,
-`insufficient_hull_support`. A METRIC request with no metric pose source fails with
-`metric_pose_unavailable`; it never silently runs monocular depth and calls the
-output METRIC.
+`invalid_gravity`, `invalid_support_plane`, `mask_mismatch`,
+`reconstruction_failed`, `insufficient_hull_support`, `unstable_reconstruction`,
+`insufficient_silhouette_consistency`. A METRIC request with no metric pose source
+fails with `metric_pose_unavailable`; it never silently runs monocular depth and
+calls the output METRIC.
 
 ## Synthetic validation
 
-Analytic cuboid captures with exact poses; for a convex solid the silhouette is
+Analytic cuboid captures with known poses; for a convex solid the silhouette is
 exactly the convex hull of the projected vertices, so masks need no renderer or
-model ([`synthetic.py`](../src/measurex_vision/multiview/synthetic.py)).
+model ([`synthetic.py`](../src/measurex_vision/multiview/synthetic.py)). The proof
+reports four **separate** experiments — the exact-pose aggregate is never mixed
+with pose-noise or short-sweep results.
 
-Reproduce:
+Reproduce (numbers below, `fine_divisions=90`):
 
 ```bash
 python scripts/m9_synthetic_proof.py --out outputs/m9_proof
 ```
 
-Latest run — 5 cartons × 3 independent sweeps (varied yaw / world origin / seed /
-mild pose noise), 48 frames each, exact metric poses, adaptive resolution
-(`fine_divisions=90`). Representative sweep per carton shown; full 15-row table in
-`scripts/m9_synthetic_proof.py` output:
+### 1. Exact-pose, full-coverage sanity test (NOT the warehouse workflow)
 
-| carton | GT L/W/H (mm) | pred L/W/H (mm) | err% L/W/H | quality |
-|---|---|---|---|---|
-| small parcel | 200/150/120 | 206/155/127 | +3.0 / +3.3 / +5.8 | medium |
-| real carton  | 345/290/245 | 351/291/253 | +1.7 / +0.3 / +3.3 | medium |
-| medium carton| 600/400/350 | 614/407/351 | +2.3 / +1.8 / +0.3 | medium |
-| large carton | 800/600/500 | 814/620/513 | +1.8 / +3.3 / +2.6 | medium |
-| tall narrow  | 250/240/800 | 257/248/821 | +2.8 / +3.3 / +2.6 | medium |
+5 cartons × 3 independent sweeps, all `pose_noise_deg = 0`, 48 frames each (3
+elevation rings × 330° azimuth). This is a generous geometry check.
 
-**Aggregate over all 15 sequences / 45 dimensions:** accepted **15/15**; absolute
-% error **median 3.3%, P90 6.6%, P95 7.8%, max 10.0%**. Errors are a consistent
-small *over*-estimate (visual hull is a superset), never a scale error.
+**Aggregate (15 sequences / 45 dimensions):** accepted 15/15; absolute % error
+**median 3.33%, P90 6.60%, P95 7.76%, max 10.00%**. Errors are a consistent small
+*over*-estimate (the visual hull is a superset), never a scale error.
 
-**Metric-scale equivariance (the key proof):** scaling the scene **and** the camera
-translations by 2× (masks byte-identical) gave reconstructed ratios
-**2.00 / 2.00 / 2.00** — scale is fixed by the poses, not a monocular prior.
+> **The exact-pose ≤2% gate did NOT pass.** The current generic visual hull sits at
+> ~3.3% median on exact poses, not ≤2%. This is reported honestly; no correction
+> factor, multiplier or carton-specific threshold is applied to reach a target.
 
-**Typed failures:** `insufficient_baseline` (identical poses),
-`insufficient_view_coverage` (3° arc), `reconstruction_failed` (voxel cap),
-`metric_pose_unavailable` (no-pose provider) — all returned correctly, no
-fabricated dimensions.
+### 2. Pose-noise robustness (reported separately)
 
-Interpretation: on exact poses the error is dominated by (a) perspective
-visual-hull looseness, which tightens with denser/farther view coverage, and (b)
-voxel quantisation (~one voxel per dimension). It is **not** a scale error —
-scale-equivariance is exact. Small dimensions (≲150 mm) carry the largest relative
-error at a fixed capture distance; a guided capture frames the carton to keep the
-relative voxel size small.
+Same full-coverage geometry, controlled per-frame rotation perturbations
+(`pose_noise_deg` = 0.15 / 0.30 / 0.50). Aggregate: accepted 15/15; **median 2.62%,
+P90 5.00%, P95 6.00%, max 7.50%**. Modest pose noise does not destabilise the
+result (it slightly averages out the quantisation asymmetry). Kept apart from the
+exact-pose aggregate above.
+
+### 3. Practical short-sweep matrix (real carton, one continuous pass)
+
+One hand-held pass — a single ring with a modest elevation ramp — over a small
+azimuth span, which is what the warehouse workflow actually produces. Frames
+{6,8,10,12} × azimuth {30,45,60,90,120}°.
+
+**This capture pattern is not viable for a generic visual hull.** Sweeps with ≤8
+frames are rejected (`unstable_reconstruction`). The sweeps that *are* accepted
+report a low leave-one-out spread (0.06–0.09) yet over-estimate **length by
+~+100–110%**: a single narrow ring cannot bound the box along the axis tangential
+to the sweep, and dropping one frame from a tight ring barely moves the (wrong)
+hull — so leave-one-out does not catch it. Width stays good (±8%), height
+over-reports (+25–34%, no top-down view).
+
+**Conclusion: a near-360° orbit is required to constrain a generic visual hull;**
+the practical short sweep fundamentally under-determines length. This is stated
+plainly rather than hidden by requiring a full orbit in the gate.
+
+### 4. Resolution convergence & voxel quantisation (real carton, exact poses)
+
+`fine_divisions` 60 → 160 (voxel 5.98 → 2.24 mm, 0.12M → 2.2M voxels):
+
+| fine_divisions | voxel mm | abs err L/W/H mm | max abs % |
+|---|---|---|---|
+| 60  | 5.98 | 2/3/10 | 4.1% |
+| 90  | 3.99 | 6/1/8  | 3.3% |
+| 120 | 2.99 | 5/3/7  | 2.9% |
+| 160 | 2.24 | 3/4/7  | 2.9% |
+
+Error **does not converge to zero** — it floors at ~2.9%. At the finest voxel the
+residual in voxels is L 1.3, W 1.8, **H 3.1**. Length/width are ~1–2 voxels
+(quantisation + hull looseness); the height residual is ~3 voxels and does **not**
+shrink with resolution, so it is **visual-hull/coverage geometry** (the top face is
+only partially capped without a top-down view), not voxel quantisation. This is the
+central limitation finding: beyond ~3 mm voxels, refining resolution buys nothing.
+
+### Metric-scale equivariance (the key metric proof)
+
+Scaling the scene **and** the camera translations by 2× (masks byte-identical) gave
+reconstructed ratios **2.00 / 2.00 / 2.00** — scale is fixed by the poses, not a
+monocular prior.
+
+### Typed failures
+
+`insufficient_baseline` (identical poses), `insufficient_view_coverage` (3° arc),
+`reconstruction_failed` (voxel cap), `metric_pose_unavailable` (no-pose provider),
+`unstable_reconstruction` (quality gate) — all returned correctly, no fabricated
+dimensions.
 
 ## Real-capture validation plan (Phase 12)
 
@@ -227,9 +288,28 @@ pytest -q
 
 ## Known limitations
 
+- **Exact-pose accuracy floors at ~3%, not ≤2%** — the dominant residual is
+  visual-hull/coverage geometry (height ~3 voxels over at any resolution), not
+  quantisation. Refining the voxel below ~3 mm buys nothing.
+- **A practical short sweep cannot constrain a generic visual hull** — a single
+  narrow ring under-determines length (~+100%); a near-360° orbit is required.
 - Above-only captures need the support plane to bound H (documented).
-- Visual hull over-reports without near-complete angular coverage; a near-horizontal
-  sweep ring is needed to cap the top tightly.
 - CPU dense voxel carve — correctness first; no GPU/octree yet (not the 3 s target).
+  The full proof script runs ~7–8 min on CPU at `fine_divisions=90` plus the
+  convergence sweep; it is a research artifact, not run in CI.
 - Masks are trusted inputs here; segmentation quality is validated separately.
 - Real-device metric poses are not yet collected — the real gate is pending.
+
+## Recommended next architecture step (NOT implemented in this spike)
+
+The limitation is intrinsic to a *generic* visual hull: it is the largest solid
+consistent with the silhouettes, so a sparse/narrow capture leaves it loose exactly
+where no silhouette cuts it. But MeasureX measures **boxes**. The next research
+option is a **metric-pose-constrained parametric cuboid fit** to the multi-view
+silhouettes — fit the 9 DOF of an oriented box (centre, gravity-aligned yaw, L/W/H)
+so its projection matches every mask, with metric scale still fixed by the poses.
+A cuboid prior is constrained by far fewer, far-apart views than a free hull, so it
+should tolerate a practical short sweep and remove the top-cap/length looseness.
+**This patch deliberately does not implement cuboid fitting** — it first establishes
+the visual-hull limitation above. No change to the measurement method was made to
+hit a target.

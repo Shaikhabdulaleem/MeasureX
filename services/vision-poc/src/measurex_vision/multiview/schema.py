@@ -39,9 +39,13 @@ class FailureCode(str, Enum):
     INSUFFICIENT_BASELINE = "insufficient_baseline"
     INSUFFICIENT_VIEW_COVERAGE = "insufficient_view_coverage"
     INVALID_GRAVITY = "invalid_gravity"
+    INVALID_SUPPORT_PLANE = "invalid_support_plane"
     MASK_MISMATCH = "mask_mismatch"
     RECONSTRUCTION_FAILED = "reconstruction_failed"
     INSUFFICIENT_HULL_SUPPORT = "insufficient_hull_support"
+    # Quality gates: a METRIC result fails when geometry is not observable enough.
+    UNSTABLE_RECONSTRUCTION = "unstable_reconstruction"
+    INSUFFICIENT_SILHOUETTE_CONSISTENCY = "insufficient_silhouette_consistency"
 
 
 class MetricReconstructionError(Exception):
@@ -51,6 +55,14 @@ class MetricReconstructionError(Exception):
         self.code = code
         self.detail = detail
         super().__init__(f"{code.value}: {detail}" if detail else code.value)
+
+
+class ContractError(ValueError):
+    """A capture manifest violates the fixed bundle contract (wrong schema
+    version, tier, pose convention, units, or a missing/mismatched file). Distinct
+    from :class:`MetricReconstructionError`, which is a geometry/observability
+    failure of an otherwise well-formed bundle. An ESTIMATE manifest is rejected
+    here — it is never silently accepted as METRIC."""
 
 
 @dataclass(frozen=True)
@@ -64,6 +76,10 @@ class ReconstructionConfig:
     consensus: float = 1.0                 # fraction of usable frames a voxel needs
     # 1.0 is the true visual hull (voxel must lie inside every view that sees it).
     # Lower it only for noisy real masks — below 1.0 inflates the hull.
+    min_usable_views: int = 2              # a voxel must project into >= this many
+    # frames before it can belong to the metric hull. A voxel seen by a single
+    # camera is unconstrained in depth along that ray, so one-view survivors are
+    # not metrically supported. GT-independent (never fit to a test carton).
     # Voxel sizes are adaptive: resolution scales with the object so relative
     # accuracy is size-independent. Divisions set voxels-per-span; min_voxel_m is
     # the memory floor. coarse_voxel_m/fine_voxel_m override to a fixed size.
@@ -79,6 +95,10 @@ class ReconstructionConfig:
     leave_one_out: bool = True
     leave_one_out_max_runs: int = 6        # cap LOO reconstructions (cost guard)
     max_dim_spread_frac: float = 0.10      # LOO relative spread gate per dimension
+    min_silhouette_consistency: float = 0.6  # min per-frame silhouette agreement
+    # Below these, a METRIC result is refused (success=False) rather than returned:
+    # weak silhouette consistency or a large leave-one-out spread means the
+    # geometry is not observable enough to trust the dimensions.
 
 
 @dataclass(frozen=True)
@@ -134,7 +154,8 @@ def validate_bundle(bundle: CaptureBundle, config: ReconstructionConfig) -> None
             f"{len(frames)} frame(s) < required {config.min_frames}",
         )
 
-    _unit(bundle.gravity_world, FailureCode.INVALID_GRAVITY, "gravity_world")
+    up = -_unit(bundle.gravity_world, FailureCode.INVALID_GRAVITY, "gravity_world")
+    _validate_support_plane(bundle.support_plane, up)
 
     for f in frames:
         if f.mask.ndim != 2 or f.mask.dtype != np.bool_:
@@ -183,6 +204,31 @@ def validate_bundle(bundle: CaptureBundle, config: ReconstructionConfig) -> None
         )
 
 
+def _validate_support_plane(support_plane: dict[str, Any] | None, up: np.ndarray) -> None:
+    """Validate an optional metric support plane ``{normal, offset}`` (world
+    metres). The normal must be a finite, non-zero 3-vector and the offset finite.
+    Allowed orientation: the plane is roughly horizontal, so its normal is within
+    45° of "up" (either sign) — a carton rests on it. A wildly tilted plane is a
+    capture/units bug, not a floor, and is rejected."""
+    if support_plane is None:
+        return
+    if "normal" not in support_plane or "offset" not in support_plane:
+        raise MetricReconstructionError(
+            FailureCode.INVALID_SUPPORT_PLANE, f"support_plane needs normal+offset, got {support_plane}"
+        )
+    n = _unit(support_plane["normal"], FailureCode.INVALID_SUPPORT_PLANE, "support_plane.normal")
+    offset = support_plane["offset"]
+    if not np.isfinite(float(offset)):
+        raise MetricReconstructionError(
+            FailureCode.INVALID_SUPPORT_PLANE, f"support_plane.offset not finite: {offset}"
+        )
+    if abs(float(n @ up)) < np.cos(np.radians(45.0)):
+        raise MetricReconstructionError(
+            FailureCode.INVALID_SUPPORT_PLANE,
+            f"support plane normal {n} is >45 deg from gravity-up {up} (not a floor)",
+        )
+
+
 def _object_locus(frames: list[ViewFrame]) -> np.ndarray:
     """World point nearest the central (mask-centroid) rays of all frames."""
     origins, dirs = [], []
@@ -207,22 +253,39 @@ def _object_locus(frames: list[ViewFrame]) -> np.ndarray:
 def load_bundle(manifest_path: str) -> CaptureBundle:
     """Load and parse a ``capture.json`` manifest into a :class:`CaptureBundle`.
 
-    Does not run :func:`validate_bundle` — the caller does, so validation failures
-    stay typed. Rejects the wrong pose convention / units up front (that is a
-    contract error, not a measurement failure)."""
+    Enforces the fixed bundle contract up front and raises :class:`ContractError`
+    on any violation — a wrong schema version/tier/convention/units, a non-list or
+    empty ``frames``, or a missing/mismatched image or mask file. An ESTIMATE
+    manifest is rejected here, never silently accepted as METRIC. Geometry and
+    observability (poses, baseline, coverage, gravity) are checked separately by
+    :func:`validate_bundle`, so those stay :class:`MetricReconstructionError`."""
     with open(manifest_path, encoding="utf-8") as fh:
         doc = json.load(fh)
-    if doc.get("pose_convention") != POSE_CONVENTION:
-        raise ValueError(f"pose_convention must be {POSE_CONVENTION!r}, got {doc.get('pose_convention')!r}")
-    if doc.get("units") != UNITS:
-        raise ValueError(f"units must be {UNITS!r}, got {doc.get('units')!r}")
+
+    def _require(key: str, expected: Any) -> None:
+        if doc.get(key) != expected:
+            raise ContractError(f"{key} must be {expected!r}, got {doc.get(key)!r}")
+
+    _require("schema_version", SCHEMA_VERSION)
+    _require("measurement_tier", "metric")
+    _require("pose_convention", POSE_CONVENTION)
+    _require("units", UNITS)
+
+    doc_frames = doc.get("frames")
+    if not isinstance(doc_frames, list) or not doc_frames:
+        raise ContractError(f"frames must be a non-empty list, got {type(doc_frames).__name__}")
 
     base = os.path.dirname(os.path.abspath(manifest_path))
     frames: list[ViewFrame] = []
-    for fr in doc["frames"]:
+    for fr in doc_frames:
         k = fr["intrinsics"]
         intr = CameraIntrinsics(fx=float(k["fx"]), fy=float(k["fy"]), cx=float(k["cx"]), cy=float(k["cy"]))
-        mask = _load_mask(os.path.join(base, fr["mask"]), int(k["width"]), int(k["height"]))
+        if "image" in fr and not os.path.exists(os.path.join(base, fr["image"])):
+            raise ContractError(f"frame {fr.get('frame_id')}: image {fr['image']!r} does not exist")
+        mask_path = os.path.join(base, fr["mask"])
+        if not os.path.exists(mask_path):
+            raise ContractError(f"frame {fr.get('frame_id')}: mask {fr['mask']!r} does not exist")
+        mask = _load_mask(mask_path, int(k["width"]), int(k["height"]))
         frames.append(
             ViewFrame(
                 frame_id=str(fr["frame_id"]),
@@ -247,8 +310,5 @@ def _load_mask(path: str, width: int, height: int) -> np.ndarray:
     with Image.open(path) as img:
         arr = np.asarray(img.convert("L"))
     if arr.shape != (height, width):
-        raise MetricReconstructionError(
-            FailureCode.MASK_MISMATCH,
-            f"{path}: mask {arr.shape} != declared ({height}, {width})",
-        )
+        raise ContractError(f"{path}: mask {arr.shape} != declared ({height}, {width})")
     return arr > 127

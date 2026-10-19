@@ -17,6 +17,7 @@ from .pose_provider import (
 )
 from .schema import (
     CaptureBundle,
+    ContractError,
     FailureCode,
     MetricReconstructionError,
     ReconstructionConfig,
@@ -29,6 +30,7 @@ __all__ = [
     "ARCoreMetricPoseProvider",
     "ARKitMetricPoseProvider",
     "CaptureBundle",
+    "ContractError",
     "FailureCode",
     "MetricPoseProvider",
     "MetricReconstructionError",
