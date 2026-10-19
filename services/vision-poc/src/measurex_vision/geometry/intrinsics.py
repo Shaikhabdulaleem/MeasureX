@@ -8,9 +8,13 @@ from enum import Enum
 
 import numpy as np
 
-# Last-resort camera horizontal FOV when nothing better is known. Typical phone
-# main camera; experimental until a device benchmark calibrates it.
+# Last-resort camera FOV when nothing better is known, measured across the LONG
+# image axis (landscape-horizontal sensor axis). Typical phone main camera ~65 deg
+# spans the long sensor axis, NOT the short axis of a portrait frame — applying it
+# to the short axis under-estimates focal and over-estimates size. Experimental
+# until a device benchmark calibrates it.
 DEFAULT_FALLBACK_FOV_DEG = 65.0
+DEFAULT_FALLBACK_FOV_AXIS = "long_image_axis"
 
 
 class IntrinsicsSource(str, Enum):
@@ -60,11 +64,17 @@ class CameraIntrinsics:
         return np.stack([u, v], axis=-1)
 
 
-def _focal_from_hfov(width: int, hfov_deg: float) -> float:
-    """Pinhole focal (px) for a horizontal field of view across ``width`` px."""
-    if not 0.0 < hfov_deg < 180.0:
-        raise ValueError("hfov_deg must be in (0, 180)")
-    return (width / 2.0) / math.tan(math.radians(hfov_deg) / 2.0)
+def _focal_from_fov(span_px: int, fov_deg: float) -> float:
+    """Pinhole focal (px) for a field of view across ``span_px`` pixels.
+
+    ``span_px`` is the image axis the FOV is measured across: image width for a
+    horizontal FOV, or ``max(width, height)`` for a long-axis FOV. Because focal
+    is tied to the sensor axis and not the pixel count of one orientation, feeding
+    the long axis makes the result orientation-invariant: the same camera gives
+    the same focal in portrait and landscape."""
+    if not 0.0 < fov_deg < 180.0:
+        raise ValueError("fov_deg must be in (0, 180)")
+    return (span_px / 2.0) / math.tan(math.radians(fov_deg) / 2.0)
 
 
 @dataclass(frozen=True)
@@ -74,6 +84,7 @@ class IntrinsicsResult:
     intrinsics: CameraIntrinsics
     source: IntrinsicsSource
     assumed_fov_deg: float | None = None  # set only when source is FOV-derived
+    assumed_fov_axis: str | None = None   # which image axis the FOV spans
 
     @property
     def is_assumed(self) -> bool:
@@ -90,6 +101,9 @@ class IntrinsicsResult:
         }
         if self.assumed_fov_deg is not None:
             out["assumed_fov_deg"] = self.assumed_fov_deg
+            out["assumed_fov_axis"] = self.assumed_fov_axis
+            w, h = self.intrinsics.cx * 2.0, self.intrinsics.cy * 2.0
+            out["image_orientation"] = "portrait" if h > w else "landscape"
         return out
 
 
@@ -130,14 +144,21 @@ def resolve_intrinsics(
                 CameraIntrinsics(fx=float(focal), fy=float(focal), cx=cx, cy=cy), source
             )
 
-    # No measured scale left — fall back to a field-of-view assumption.
+    # No measured scale left — fall back to a field-of-view assumption. A caller's
+    # ``--fov-deg`` is a HORIZONTAL FOV (across width) as its contract documents;
+    # the built-in default is a LONG-AXIS FOV (across max(width,height)) so the
+    # same camera yields the same focal in portrait and landscape. Do not conflate
+    # the two — that is the M8 portrait under-estimation bug.
     if fallback_fov_deg is not None and fallback_fov_deg > 0:
         source = IntrinsicsSource.CONFIGURED_FOV
-        fov = fallback_fov_deg
+        fov, axis, span = fallback_fov_deg, "horizontal", width
     else:
         source = IntrinsicsSource.ASSUMED
-        fov = DEFAULT_FALLBACK_FOV_DEG
-    focal = _focal_from_hfov(width, fov)
+        fov, axis, span = DEFAULT_FALLBACK_FOV_DEG, DEFAULT_FALLBACK_FOV_AXIS, max(width, height)
+    focal = _focal_from_fov(span, fov)
     return IntrinsicsResult(
-        CameraIntrinsics(fx=focal, fy=focal, cx=cx, cy=cy), source, assumed_fov_deg=fov
+        CameraIntrinsics(fx=focal, fy=focal, cx=cx, cy=cy),
+        source,
+        assumed_fov_deg=fov,
+        assumed_fov_axis=axis,
     )

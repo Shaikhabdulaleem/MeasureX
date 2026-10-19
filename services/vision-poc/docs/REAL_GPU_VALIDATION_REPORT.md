@@ -46,6 +46,15 @@
 > intrinsics_source assumed, fx=fy 753.449, assumed_fov_deg 65.0,
 > plane_inlier_ratio 0.535, object_point_count 154844.
 
+> **Capture note (corrected):** this image is from a Samsung Galaxy A16 4G
+> (SM-A165F/DS) 1x main camera, shot in **portrait** at 960×1280. The old
+> fallback applied the 65° FOV across the **short** (960 px) axis, giving
+> fx=fy 753.449 — physically wrong for a portrait frame. The fallback now treats
+> the built-in 65° as a **long-axis** FOV (across max(w,h)=1280), giving
+> fx=fy ≈ 1005 px, orientation-invariant. This corrects a scale assumption only;
+> it does **not** solve the accuracy problem — the support-plane overshoot below
+> remains the dominant error, and intrinsics stay `assumed` (no EXIF/device focal).
+
 ## 6. Video result (stabilized)
 - Frames accepted: `__/__`  | Stabilized L/W/H: `__ / __ / __` mm
 - Spread L/W/H: `__ / __ / __` mm  | Confidence: `____`  | Runtime: `__` ms
