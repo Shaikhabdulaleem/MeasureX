@@ -46,6 +46,11 @@ class FailureCode(str, Enum):
     # Quality gates: a METRIC result fails when geometry is not observable enough.
     UNSTABLE_RECONSTRUCTION = "unstable_reconstruction"
     INSUFFICIENT_SILHOUETTE_CONSISTENCY = "insufficient_silhouette_consistency"
+    # Parametric cuboid fit (see cuboid_fit.py): the optimiser converged but the
+    # metric dimensions are not identifiable / stable enough to trust.
+    CUBOID_FIT_FAILED = "cuboid_fit_failed"
+    AMBIGUOUS_CUBOID_FIT = "ambiguous_cuboid_fit"
+    UNSTABLE_CUBOID_FIT = "unstable_cuboid_fit"
 
 
 class MetricReconstructionError(Exception):
@@ -123,6 +128,23 @@ class ViewFrame:
         return int(self.mask.shape[1])
 
 
+def canonical_support_plane(support_plane: dict[str, Any] | None, up: np.ndarray) -> dict[str, Any] | None:
+    """Return the support plane with its normal oriented toward gravity-``up``.
+
+    The same geometric plane has two ``(normal, offset)`` encodings. Downstream
+    signed half-space tests ("is this point above the plane?") depend on which one
+    they receive, so M9 fixes one convention: **the normal points toward
+    gravity-up**. If the supplied normal points the other way, flip both the normal
+    and the offset (same plane, opposite labelled side)."""
+    if support_plane is None or "normal" not in support_plane or "offset" not in support_plane:
+        return support_plane
+    n = np.asarray(support_plane["normal"], dtype=float)
+    offset = float(support_plane["offset"])
+    if float(n @ up) < 0.0:
+        n, offset = -n, -offset
+    return {**support_plane, "normal": [float(x) for x in n], "offset": offset}
+
+
 @dataclass(frozen=True)
 class CaptureBundle:
     """A validated capture sequence ready for reconstruction."""
@@ -132,6 +154,16 @@ class CaptureBundle:
     pose_source: str
     support_plane: dict[str, Any] | None = None  # optional {normal, offset} in world metres
     meta: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        # Canonicalise the support-plane normal once, at the single point every
+        # bundle passes through, so no downstream consumer has to care about the
+        # supplied sign (see canonical_support_plane).
+        g = np.asarray(self.gravity_world, dtype=float)
+        gn = float(np.linalg.norm(g))
+        if self.support_plane is not None and np.isfinite(gn) and gn > 1e-9:
+            canon = canonical_support_plane(self.support_plane, -g / gn)
+            object.__setattr__(self, "support_plane", canon)
 
 
 def _unit(v: np.ndarray, code: FailureCode, what: str) -> np.ndarray:

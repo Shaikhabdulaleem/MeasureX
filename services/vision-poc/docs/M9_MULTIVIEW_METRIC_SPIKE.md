@@ -210,9 +210,13 @@ to the sweep, and dropping one frame from a tight ring barely moves the (wrong)
 hull — so leave-one-out does not catch it. Width stays good (±8%), height
 over-reports (+25–34%, no top-down view).
 
-**Conclusion: a near-360° orbit is required to constrain a generic visual hull;**
-the practical short sweep fundamentally under-determines length. This is stated
-plainly rather than hidden by requiring a full orbit in the gate.
+**Conclusion (evidence-accurate):** the 30–120° practical short sweeps tested here
+were insufficient for the generic visual hull; the 330° full-coverage benchmark was
+substantially better (median ~3.3% vs grossly wrong length). The 120–330°
+intermediate angular coverage was **not** exhaustively tested, so this does not
+establish that a near-360° orbit is mathematically *required* — only that the tested
+short sweeps under-determine a generic hull's length. Either way the warehouse UX
+cannot depend on a near-full orbit, which motivates the carton-prior fit below.
 
 ### 4. Resolution convergence & voxel quantisation (real carton, exact poses)
 
@@ -291,8 +295,10 @@ pytest -q
 - **Exact-pose accuracy floors at ~3%, not ≤2%** — the dominant residual is
   visual-hull/coverage geometry (height ~3 voxels over at any resolution), not
   quantisation. Refining the voxel below ~3 mm buys nothing.
-- **A practical short sweep cannot constrain a generic visual hull** — a single
-  narrow ring under-determines length (~+100%); a near-360° orbit is required.
+- **A practical short sweep cannot constrain a *generic* visual hull** — the tested
+  30–120° narrow rings under-determine length (~+100%); 330° full coverage was
+  substantially better (120–330° not exhaustively tested). The parametric cuboid fit
+  below removes this limitation on the same short sweeps.
 - Above-only captures need the support plane to bound H (documented).
 - CPU dense voxel carve — correctness first; no GPU/octree yet (not the 3 s target).
   The full proof script runs ~7–8 min on CPU at `fine_divisions=90` plus the
@@ -300,16 +306,110 @@ pytest -q
 - Masks are trusted inputs here; segmentation quality is validated separately.
 - Real-device metric poses are not yet collected — the real gate is pending.
 
-## Recommended next architecture step (NOT implemented in this spike)
+## Parametric cuboid-fit experiment (the carton prior)
 
-The limitation is intrinsic to a *generic* visual hull: it is the largest solid
-consistent with the silhouettes, so a sparse/narrow capture leaves it loose exactly
-where no silhouette cuts it. But MeasureX measures **boxes**. The next research
-option is a **metric-pose-constrained parametric cuboid fit** to the multi-view
-silhouettes — fit the 9 DOF of an oriented box (centre, gravity-aligned yaw, L/W/H)
-so its projection matches every mask, with metric scale still fixed by the poses.
-A cuboid prior is constrained by far fewer, far-apart views than a free hull, so it
-should tolerate a practical short sweep and remove the top-cap/length looseness.
-**This patch deliberately does not implement cuboid fitting** — it first establishes
-the visual-hull limitation above. No change to the measurement method was made to
-hit a target.
+The limitation above is intrinsic to a *generic* visual hull: it is the largest
+solid consistent with the silhouettes, so a sparse/narrow capture leaves it loose
+exactly where no silhouette cuts it. But MeasureX measures **boxes**, so this
+experiment replaces the free-form hull hypothesis with a **metric-pose-constrained
+parametric cuboid fit**: fit the few parameters of a gravity-aligned box so its
+projected silhouette matches every mask. The visual hull is kept as the diagnostic
+baseline/comparison method — it is not deleted or replaced.
+[`cuboid_fit.py`](../src/measurex_vision/multiview/cuboid_fit.py).
+
+### Degrees of freedom (corrected)
+
+A general oriented cuboid has 9 DOF (translation 3 + rotation 3 + dimensions 3). But
+**gravity fixes roll and pitch**, so the box only yaws:
+
+| configuration | parameters | DOF |
+|---|---|---|
+| no support plane | centre (3) + yaw (1) + L/W/H (3) | **7** |
+| bottom face on a known metric support plane | horizontal centre (2) + yaw (1) + L/W/H (3) | **6** |
+
+The earlier text calling this a "9 DOF" fit was wrong; the lowest physically
+justified parameterisation is 6 DOF (plane) / 7 DOF (no plane), and both are
+implemented and reported. **Metric scale still comes only from the camera-pose
+translations** — the support plane supplies orientation and one vertical datum, not
+a scale, and must never introduce a correction factor.
+
+### Parameterisation, objective and optimiser
+
+- **Model:** `CuboidParameters` = centre (u, v [, w]) + yaw + L/W/H in a
+  gravity-aligned frame; the bottom face lies on the support plane in the 6-DOF
+  case. `length > 0, width > 0, height > 0`; the final output is canonicalised to
+  `length >= width` with yaw wrapped into `[-90°, 90°)` (resolving the natural
+  `(L, W, yaw) ≡ (W, L, yaw+90°)` symmetry so equivalent solutions are not treated
+  as different failures).
+- **Objective (silhouette agreement, GT-free):** per frame, the candidate box is
+  projected and its exact convex silhouette is compared to the observed mask by
+  **IoU** (computed analytically as a convex-polygon intersection, not rasterised in
+  the loop), plus small mask-centroid and boundary (Chamfer) regularisers. IoU is
+  symmetric — an oversized box spills outside the mask and is penalised — unlike the
+  hull's "fraction of surviving voxels inside the mask".
+- **Optimiser:** a deterministic, hard-bounded pure-NumPy pattern search
+  (Hooke–Jeeves) from several generic yaw/scale starts. Initialisation (centre, scale,
+  yaw) comes from the multi-view mask locus and the mask-solid-angle ROI — **never**
+  from ground truth; bounds come from capture geometry, not a known box size.
+- **Observability gates (typed failures, never a silent bad dimension):**
+  `insufficient_silhouette_consistency` (mean/min IoU or boundary residual),
+  `ambiguous_cuboid_fit` (perturbing a dimension around the optimum barely changes
+  the loss → a flat, unobservable direction), `unstable_cuboid_fit` (leave-one-frame-
+  out L/W/H spread too large). Thresholds are explicit, image-space and object-
+  independent (not tuned per carton).
+
+### Result: the carton prior solves the short sweep
+
+On the **same** practical short-sweep captures that the generic visual hull failed
+(it over-estimated length by ~+100%), the cuboid fit recovers L/W/H on exact poses
+to within ~1% typically, well under the ≤2% exact-pose target — including a 30°/6-
+frame sweep, non-zero carton yaw, and the 7-DOF no-plane configuration. Metric-scale
+equivariance holds (2× scene + 2× camera translations → 2.00× dimensions). Mask
+errors and pose noise either stay within the gate or are rejected with a typed
+failure; results are never silently wrong.
+
+> Reproduce (research artifact, not run in CI — the pure-NumPy optimiser is minutes,
+> not the warehouse speed target):
+>
+> ```bash
+> python scripts/m9_cuboid_proof.py          # quick representative grid
+> python scripts/m9_cuboid_proof.py --full   # full size × yaw × frames × span grid
+> ```
+>
+**Representative exact-pose short-sweep grid** (3 sizes × 2 yaws × frames {6,8,10,12}
+× span {45,60,90,120}°, 96 sequences; `scripts/m9_cuboid_proof.py`):
+
+- accepted **96/96**; abs % error per dim **P50 0.34%, P90 2.00%, P95 4.27%** — the
+  **≤2% exact-pose P50 target passes** (the generic hull did not). Max 30% is a
+  single small-parcel dimension (fewest pixels at the small benchmark image); median
+  by size: medium 0.25%, real 0.34%, small parcel 1.33%; by yaw: 0° 0.41%, 45° 0.29%.
+- **minimum viable sweep** (all dims ≤2%): **6 frames over 45°** — a realistic
+  hand-held pass, not an orbit.
+
+**Visual hull vs cuboid fit on the *same* short sweeps** (err % L/W/H):
+
+| frames | span | visual hull | cuboid fit |
+|---|---|---|---|
+| 8  | 45°  | **+120 / +17 / +25** | +0.3 / −0.3 / −0.4 |
+| 10 | 60°  | **+99 / +9 / +22**   | 0.0 / −0.3 / −0.4 |
+| 10 | 90°  | **+66 / +12 / +20**  | −0.3 / −0.3 / 0.0 |
+| 12 | 120° | **+29 / +11 / +18**  | 0.0 / −0.3 / −0.4 |
+
+The carton prior removes the hull's length over-estimate on exactly the captures
+that defeat it.
+
+- **Mask-error robustness:** clean / undersized / shifted / one-missing frame all
+  recovered to ≤0.4%; an oversized or heavily-noisy mask is **rejected typed**
+  (`insufficient_silhouette_consistency`) — never a silently-wrong dimension.
+- **Pose-noise degradation** (reported separately from exact-pose): rotation
+  0.1→1.0° → max dim error 0.3→2.4%; translation 1→10 mm → 0.4→1.2%. This is the
+  pose quality a future ARCore/ARKit/VIO source would need to meet.
+
+### Honest scope
+
+The cuboid fit is a **synthetic exact-mask / exact-pose** proof. It shows the carton
+prior removes the short-sweep under-constraint that defeats a generic hull; it does
+**not** yet prove real-device accuracy. No ground truth enters the fit, no correction
+multiplier is applied, and no threshold is tuned to a carton. Real-capture validation
+(masks from SAM 2, metric poses from ARCore/ARKit VIO) remains the pending gate — see
+the ARCore/ARKit boundary note above. PR #20 is not merged and M8 is unchanged.

@@ -8,6 +8,7 @@ from the camera poses, never from monocular depth. See
 
 from __future__ import annotations
 
+from .cuboid_fit import CuboidFitConfig, CuboidParameters, fit_cuboid
 from .pipeline import reconstruct, reconstruct_from_provider
 from .pose_provider import (
     ARCoreMetricPoseProvider,
@@ -31,12 +32,15 @@ __all__ = [
     "ARKitMetricPoseProvider",
     "CaptureBundle",
     "ContractError",
+    "CuboidFitConfig",
+    "CuboidParameters",
     "FailureCode",
     "MetricPoseProvider",
     "MetricReconstructionError",
     "OfflineManifestProvider",
     "ReconstructionConfig",
     "ViewFrame",
+    "fit_cuboid",
     "load_bundle",
     "reconstruct",
     "reconstruct_from_provider",
