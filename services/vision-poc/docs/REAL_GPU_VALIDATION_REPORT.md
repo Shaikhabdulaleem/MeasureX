@@ -188,6 +188,83 @@ horizontal extents and computed height before mm conversion; and image-space
 bbox/mask/size diagnostics. These describe the existing measurement; they do not
 alter it.
 
+## 19. Post-intrinsics-fix run and depth-model benchmarks (M8 decision evidence)
+
+All three runs below use the **same** image, SAM mask, support selector, corrected
+intrinsics (fx=fy 1004.5988, 65° long-image-axis FOV fallback), RANSAC and
+support-plane geometry diagnostic. No measurement algorithm was changed to produce
+them, and no dimension was tuned against the GT (345 / 290 / 245 mm — validation
+only).
+
+### A. Depth Anything V2 Small — post-intrinsics-fix run (current production stack)
+
+| Sample | Pred L | Pred W | Pred H | Confidence | Level |
+|---|---|---|---|---|---|
+| image_003 | 1057 | 884 | 368 | 0.6059 | **MEDIUM** |
+
+- Production 3D PCA/OBB: **1057 / 884 / 368 mm**.
+- Support-plane-constrained diagnostic: L P5–95 **588.2 mm**, W P5–95 **371.7 mm**,
+  height P95 **363.8 mm**.
+- intrinsics_source assumed, fx=fy **1004.5988**; support inlier ratio **0.6861**.
+- Error vs GT: L +206%, W +205%, H +50%.
+- **Confidence-calibration failure (address later):** the engine reported
+  **MEDIUM (0.6059)** confidence despite >200% L/W errors. A grossly inaccurate
+  result must not surface as MEDIUM. See §19D action item; do not change confidence
+  code in this documentation commit.
+
+### B. Depth Anything V2 Base — benchmark
+
+| Robust footprint L | Robust footprint W | Height P95 | Support inlier ratio |
+|---|---|---|---|
+| 623.3 mm | 359.3 mm | 410.7 mm | 0.5276 |
+
+- **Base did not improve the result** — footprint and height remain far from GT, and
+  the support inlier ratio dropped vs Small. A larger DA-V2 variant is not the fix.
+
+### C. MetricAnything Student — external benchmark (MetricAnything student model)
+
+Same image, same SAM mask, same support selector, same corrected intrinsics, same
+RANSAC, same geometry diagnostic.
+
+- Current 3D PCA/OBB: 1334 / 1181 / 363 mm.
+- Support-plane-constrained diagnostic (robust footprint): **496.0 / 316.7 mm**,
+  height P95 **359.9 mm**.
+
+| Dim | Robust value | GT | % err |
+|---|---|---|---|
+| Length | 496.0 mm | 345 mm | **+43.8%** |
+| Width | 316.7 mm | 290 mm | **+9.2%** |
+| Height (P95) | 359.9 mm | 245 mm | **+46.9%** |
+
+- MetricAnything materially **improved the projected footprint** (especially width,
+  +9.2% vs DA-V2's +205%) but **did not solve absolute metric height**: it
+  independently predicts essentially the same incorrect ~360 mm height as DA-V2
+  (GT 245 mm).
+
+### D. M8 conclusion and action items
+
+Two independent monocular metric-depth models (DA-V2 and MetricAnything) predict
+the **same** wrong carton height (~360 mm vs GT 245 mm) from the same single RGB
+view. This is strong evidence that **changing the monocular metric-depth model
+alone will not meet the MeasureX absolute-dimension accuracy requirement**. It also
+confirms:
+
+- unconstrained 3D PCA/OBB is unsuitable for partial single-view carton clouds;
+- the support-plane-constrained footprint is structurally superior;
+- the camera portrait-FOV bug is already fixed (8eb020f);
+- support/object cloud separation is already fixed (08ef2e3).
+
+Action items (do **not** implement in this documentation commit):
+
+1. **Confidence calibration defect.** Assumed intrinsics and unvalidated metric
+   scale must cap or block production-grade confidence; the 0.6059/MEDIUM result
+   above must not be reachable for a >200%-error measurement. (Confidence code
+   unchanged here.)
+2. **Measurement method.** See `docs/ADR_RGB_METRIC_SCALE.md`: single-frame
+   RGB-only metric depth is not accepted as the sole billing-grade metric source;
+   the next research path is guided multi-frame capture with metric camera pose
+   (M9 spike).
+
 ---
 Flutter integration does **not** start automatically — it requires explicit owner
 approval after reviewing this report (M6 Step 13).
