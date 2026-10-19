@@ -1,11 +1,15 @@
 # MeasureX Vision POC — Real GPU Validation Report
 
-> **STATUS: M8 accuracy gate FAILED.** Two real end-to-end Kaggle carton runs now
-> completed the full pipeline but both produced grossly wrong dimensions. The
-> second run (§17), after the support/object cloud separation fix (08ef2e3),
-> confirms the separation is structurally correct yet accuracy still fails badly.
-> A diagnostics-only patch (§18) was added to gather strong real-run evidence
-> before any further algorithm change. **M8 has not passed.**
+> **STATUS: M8 accuracy gate FAILED.** The evaluation now spans five runs on the
+> same real carton: the original real run (§5), the support-plane-separated run
+> (§17, fix 08ef2e3), the post-intrinsics-fix run (§19A, fix 8eb020f), and two
+> depth-model *diagnostic* benchmarks — DA-V2 Base (§19B) and MetricAnything
+> Student (§19C). The two full production runs produced grossly wrong dimensions;
+> the diagnostic benchmarks (not full production runs) confirm that swapping the
+> monocular metric-depth model alone does not recover absolute scale, especially
+> height. A diagnostics-only patch (§18) gathered the real-run evidence. The M8
+> decision is recorded in [`../../../docs/ADR_RGB_METRIC_SCALE.md`](../../../docs/ADR_RGB_METRIC_SCALE.md).
+> **M8 has not passed.**
 
 - **Date:** 2026-10-18 (first real run)
 - **Run by:** owner (Kaggle)
@@ -65,10 +69,13 @@
 - Did multi-frame reduce error vs the best single frame? `____`
 
 ## 8. Depth provider comparison
-- Depth Pro: see above.
-- Depth Anything V2 Small: **not implemented this milestone (deferred)** — leave blank.
-  (When implemented, compare L/W/H error, CBM error, runtime, VRAM, failure rate,
-  confidence, PRODUCTION_ALLOWED on the **same** image/video.)
+Full depth-provider comparison data is in **§19** (same image, mask, support
+selector, intrinsics, RANSAC and geometry). Summary:
+- **Depth Anything V2 Small** — current production POC provider (§19A).
+- **Depth Anything V2 Base** — diagnostic benchmark; did **not** improve accuracy (§19B).
+- **MetricAnything Student** — external diagnostic benchmark; improved the robust
+  footprint but **not** metric height (§19C).
+- **Depth Pro** — research-only (non-commercial weights); **not** a production path.
 
 ## 9. Dimensional errors (vs ground truth)
 | Dim | Pred | GT | Abs err (mm) | % err |
@@ -100,17 +107,23 @@
 
 ## 15. Recommendation (pick one)
 - [ ] A. Ready for wider benchmark
-- [x] B. Needs geometry/depth tuning
+- [ ] B. Needs geometry/depth tuning
 - [ ] C. Needs segmentation tuning
 - [ ] D. Needs a different metric-depth provider
-- [ ] E. Not currently accurate enough
+- [x] E. Not currently accurate enough
 - [ ] F. Promising enough to begin Flutter integration **after** a larger benchmark
 
-**Rationale:** The first real run failed the accuracy gate because the support
-plane was fitted from the object-only cloud (a carton face read as the floor),
-not because depth or segmentation were bad. The support-plane architecture has
-been fixed (§16); re-run with the same image, then with a phone image carrying
-real EXIF/device intrinsics, before any further recommendation.
+**Rationale:** The reruns requested after the first failure have now been done.
+The support-plane separation (§17) and the portrait-FOV intrinsics (§19A) were
+both fixed, yet the post-fix production run is still ~206% over on L/W and ~50%
+over on H. Two independent metric-depth models (DA-V2 §19B and MetricAnything
+§19C) predict essentially the same wrong ~360 mm height from the same single RGB
+view, so option D (a different metric-depth provider) is ruled out as the fix.
+Single-frame RGB-only measurement is **not currently accurate enough** for
+billing-grade use. **M9 metric multi-frame research** (guided capture with metric
+visual-inertial camera pose) is the recommended next path — see
+[`../../../docs/ADR_RGB_METRIC_SCALE.md`](../../../docs/ADR_RGB_METRIC_SCALE.md).
+Flutter integration is **not** ready.
 
 ## 16. Known issues found & fixed during validation
 - **O(N²) plane-refit memory bug (fixed).** The real Kaggle carton test ran the
@@ -236,10 +249,19 @@ RANSAC, same geometry diagnostic.
 | Width | 316.7 mm | 290 mm | **+9.2%** |
 | Height (P95) | 359.9 mm | 245 mm | **+46.9%** |
 
-- MetricAnything materially **improved the projected footprint** (especially width,
-  +9.2% vs DA-V2's +205%) but **did not solve absolute metric height**: it
+**Robust-to-robust comparison (like-for-like, support-plane-constrained footprint
+of both models — not the production 3D OBB):**
+
+| Model | Robust L | L % err | Robust W | W % err |
+|---|---|---|---|---|
+| DA-V2 Small (§19A) | 588.2 mm | +70.5% | 371.7 mm | +28.2% |
+| MetricAnything | 496.0 mm | +43.8% | 316.7 mm | +9.2% |
+
+- MetricAnything **improved robust length error from +70.5% to +43.8% and robust
+  width error from +28.2% to +9.2%**, but **height remained ~47% high**: it
   independently predicts essentially the same incorrect ~360 mm height as DA-V2
-  (GT 245 mm).
+  (GT 245 mm). The footprint improvement is real; absolute metric height is not
+  solved by changing the depth model.
 
 ### D. M8 conclusion and action items
 

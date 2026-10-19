@@ -49,7 +49,7 @@ ESTIMATE explicitly, it does not relabel the result.
 ### ESTIMATE
 
 - RGB-only monocular path.
-- Must be clearly reported to the caller/user as *estimated*.
+- Must be clearly reported to the caller/user as _estimated_.
 - Confidence must not imply billing-grade accuracy.
 
 ### METRIC
