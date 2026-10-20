@@ -159,8 +159,9 @@ gravity-up — a floor, not an arbitrary tilt).
 `reconstruction_failed`, `insufficient_hull_support`, `unstable_reconstruction`,
 `insufficient_silhouette_consistency`. The parametric cuboid fit adds
 `cuboid_fit_failed` (optimiser did not converge), `ambiguous_cuboid_fit` (a fitted
-DOF is unobservable), `unstable_cuboid_fit` (leave-one-out spread too large), and
-`insufficient_image_resolution` (object too small in pixels). A METRIC request with
+DOF is unobservable), `unstable_cuboid_fit` (leave-one-out spread too large),
+`insufficient_stability_evidence` (too few leave-one-out refits succeeded to judge
+stability), and `insufficient_image_resolution` (object too small in pixels). A METRIC request with
 no metric pose source fails with `metric_pose_unavailable`; it never silently runs
 monocular depth and calls the output METRIC.
 
@@ -373,13 +374,34 @@ a scale, and must never introduce a correction factor.
   perturbation — barely changes the loss → a flat, unobservable direction; yaw is
   exempt for a near-square footprint, where the L/W + 90° symmetry makes it
   unobservable but harmless), `unstable_cuboid_fit` (leave-one-frame-out L/W/H spread
-  too large), and an optional `insufficient_image_resolution` (observed mask bbox
-  below a GT-free pixel floor — off by default on the deliberately tiny synthetic
-  grid, calibrated from the ±1 px quantisation study for real captures). **The
-  leave-one-out refit is leak-free:** every subset rebuilds its own object locus,
-  ROI and cuboid frame from only the frames it keeps, so the omitted frame
-  contributes nothing. Thresholds are explicit, image-space and object-independent
-  (not tuned per carton).
+  too large), `insufficient_stability_evidence` (not enough leave-one-out refits
+  succeeded to judge stability at all — see below), and an optional
+  `insufficient_image_resolution` (observed mask bbox below a GT-free pixel floor —
+  off by default on the deliberately tiny synthetic grid, calibrated from the ±1 px
+  quantisation study for real captures). **The leave-one-out refit is leak-free:**
+  every subset rebuilds its own object locus, ROI and cuboid frame from only the
+  frames it keeps, so the omitted frame contributes nothing. Thresholds are explicit,
+  image-space and object-independent (not tuned per carton).
+
+### Leave-one-out stability gate (final, hardened behaviour)
+
+The LOO gate reports its own census — `requested_runs`, `successful_runs`,
+`failed_runs`, plus the per-subset failure reasons — and a refit subset can itself
+fail typed (e.g. `cuboid_fit_failed`, `insufficient_silhouette_consistency`) rather
+than silently counting as evidence. Acceptance now requires **enough evidence first,
+then low spread**:
+
+- `min_loo_success_runs = 2` and `min_loo_success_fraction = 1.0` — every requested
+  LOO refit must succeed, and at least two must exist, before stability is even
+  judged.
+- If too few refits succeed, the fit fails `insufficient_stability_evidence` (the
+  earlier gate could pass on a single lucky surviving refit; it no longer can).
+- Only once enough LOO evidence exists is the L/W/H spread checked; excessive
+  dimensional spread fails `unstable_cuboid_fit`.
+
+This hardening is why the final accept count (286/400) is lower than the pre-hardening
+figure — some sequences that previously passed on thin LOO evidence are now correctly
+refused.
 
 ### Result: the full spec grid (400 exact-pose sequences, complete gate)
 
@@ -389,26 +411,26 @@ gate including leave-one-out** — not a hand-picked quick grid. A bounded LOO (
 leak-free refits) and the GT-free gates decide acceptance; ground truth is compared
 only after the fact.
 
-> Reproduce (research artifact, not run in CI — the pure-NumPy optimiser is ~an hour
-> for the full grid, not the warehouse speed target):
+> Reproduce (research artifact, not run in CI — the pure-NumPy optimiser is
+> **~79 min CPU** for the full 400-sequence grid, not the warehouse speed target):
 >
 > ```bash
 > python scripts/m9_cuboid_proof.py           # quick developer grid (fast)
 > python scripts/m9_cuboid_proof.py --full    # the full 400-sequence spec grid
 > ```
 
-**Aggregate:** accepted **303/400 (75.7%)**. Acceptance by gate stage (GT-free):
-optimizer-converged 396, silhouette 399, identifiability 384, leave-one-out 310,
-**final metric 303**.
+**Aggregate:** accepted **286/400 (71.5%)**. Acceptance by gate stage (GT-free):
+optimizer-converged 396, silhouette 399, identifiability 384, leave-one-out 292,
+**final metric 286**.
 
 **Per-dimension `|error %|` over accepted sequences:**
 
 | dim | P50 | P90 | P95 | max |
 |---|---|---|---|---|
-| length | 0.29 | 2.0 | 3.0 | 25.12 |
-| width  | 0.34 | 2.0 | 2.0 | 14.17 |
+| length | 0.29 | 2.00 | 2.50 | 25.12 |
+| width  | 0.34 | 2.00 | 2.00 | 14.17 |
 | height | 0.20 | 0.83 | 0.86 | 6.40 |
-| pooled | 0.33 | 2.0 | 2.0 | 25.12 |
+| pooled | 0.29 | 2.00 | 2.00 | 25.12 |
 
 - **The per-dimension median ≤ 2% research gate PASSES** (median |L| 0.29%, |W|
   0.34%, |H| 0.20% — each independently ≤ 2%). Median `|err%|` by size: large 0.20,
@@ -419,7 +441,7 @@ optimizer-converged 396, silhouette 399, identifiability 384, leave-one-out 310,
   groups blow past it).
 
 **Research false accepts (the gate is NOT perfect).** GT is used only by the
-evaluator here. Of the 303 accepted sequences: **15 have a dimension error > 5%, 4 >
+evaluator here. Of the 286 accepted sequences: **14 have a dimension error > 5%, 4 >
 10%, and 1 > 20%** (worst accepted error **25.12%** — the small parcel at 200 px, a
 resolution artifact). **So the quality gates do NOT catch every large synthetic
 error.** The honest claim is *"most large errors are rejected"*, not *"bad results
@@ -428,7 +450,8 @@ are never silently accepted"*.
 **Robustly viable capture configurations.** Grouping every `(frames, span)` across
 all sizes and yaws, a configuration is viable only if the **whole group** is 100%
 accepted, has 0 false accepts, and P95 ≤ 5% per dimension. **The only robustly viable
-sweep is 8 frames over 120°** (the previous "6 frames / 45°" claim was a single lucky
+sweep is 8 frames over 120°** — that group is 100% accepted, 0 false accepts, P95
+**L 2.0% / W 1.37% / H 0.43%** (the previous "6 frames / 45°" claim was a single lucky
 row, not a grouped result). Narrower/fewer-frame sweeps have lower acceptance and
 occasional large errors.
 
@@ -461,6 +484,13 @@ refit) falls ~4–5× from 200→960 px and tracks the true error — a real obs
 diagnostic for deciding when a projected object is too small to measure (hence the
 optional `insufficient_image_resolution` gate). The 200 px small-parcel case is the
 25% outlier's origin; the algorithm was **not** changed to fit it.
+
+**The image-resolution gate remains disabled by default (`min_mask_bbox_px = 0`).**
+The synthetic resolution study above shows that low pixel coverage can cause large
+errors, but a production threshold has **not** been calibrated yet. Real-device M9
+must collect actual mask pixel coverage and quantisation uncertainty on real captures
+before a threshold is selected — the synthetic ±1 px study motivates the gate but does
+not set its value.
 
 - **Support-plane error sensitivity** (poses exact): plane **offset** 1/3/5/10 mm →
   max dim error 0.6/1.2/1.6/**3.7**% (H is the most affected, as expected — it is
@@ -504,6 +534,18 @@ What it does and does not establish, honestly:
   capture configuration (only 8f/120° was robustly viable across all sizes/yaws), and
   metric-pose scale good to ≈ the target tolerance (scale bias propagates ~1:1).
 
+**Bottom line (honest):** the synthetic cuboid-fit research gate passed at the
+median-error level (per-dimension median ≤ 2%), but the quality gate is **not
+perfect** (14 accepted sequences still exceeded 5% error, one at 25%). On this
+evidence the method is suitable for a **small real-device research experiment** — it
+is **not** warehouse/production ready.
+
 Real-capture validation (masks from SAM 2, metric poses from ARCore/ARKit VIO)
 remains the pending gate — see the ARCore/ARKit boundary note above. PR #20 is not
 merged and M8 is unchanged.
+
+---
+
+**Verification (final synthetic run).** Full grid = 400 exact-pose sequences;
+accepted 286/400 (71.5%); full benchmark runtime ≈ 79 min CPU. Test suite: **224
+passed**. CI: **GitHub Actions CI #84 GREEN on `b6dbee0`**.
