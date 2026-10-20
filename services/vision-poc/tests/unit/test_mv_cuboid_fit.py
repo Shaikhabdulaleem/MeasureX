@@ -180,6 +180,15 @@ def test_leave_one_out_instability_fails_typed():
     assert r["reason"] == FailureCode.UNSTABLE_CUBOID_FIT.value
 
 
+def test_silhouette_gate_helper_includes_boundary_residual():
+    """The shared silhouette gate (used by both the production gate and the benchmark
+    stage accounting) rejects on the boundary residual, not IoU alone — so a stage
+    cannot be reported as passed that the real gate would fail."""
+    cfg = CuboidFitConfig()
+    assert cf.silhouette_consistent(0.95, 0.90, cfg.max_boundary_frac * 0.5, cfg) is True
+    assert cf.silhouette_consistent(0.95, 0.90, cfg.max_boundary_frac * 2.0, cfg) is False
+
+
 def test_insufficient_silhouette_consistency_fails_typed():
     bundle, _ = _cap()
     cfg = dataclasses.replace(CFG, min_mean_iou=1.01)  # unreachable -> always fails
@@ -307,6 +316,70 @@ def test_leave_one_out_subset_fit_is_stable_on_good_capture():
     loo = cf._leave_one_out(bundle, ReconstructionConfig(), dataclasses.replace(CFG, leave_one_out=True), None)
     assert loo["runs"] >= 2
     assert loo["spread_frac_max"] < 0.10
+
+
+# --- Fix: LOO evidence requirement — absence of evidence is NOT "stable" ------ #
+
+def test_loo_zero_successful_runs_fails_metric():
+    """A. No LOO subset can be refit (every subset drops below min_frames) -> the
+    metric result is refused, not passed on a None spread."""
+    bundle, _ = _cap(n=6, span=90.0)
+    cfg = dataclasses.replace(CFG, leave_one_out=True, leave_one_out_max_runs=4)
+    r = fit_cuboid(bundle, cfg, config=ReconstructionConfig(min_frames=6))
+    assert r["success"] is False
+    assert r["reason"] == FailureCode.INSUFFICIENT_STABILITY_EVIDENCE.value
+    loo = r["diagnostics"]["leave_one_out_spread"]
+    assert loo["successful_runs"] == 0 and loo["failed_runs"] == loo["requested_runs"]
+    assert all(f["reason"] == FailureCode.INSUFFICIENT_FRAMES.value for f in loo["failures"])
+
+
+def test_loo_single_successful_run_fails_metric():
+    """B. One successful LOO run is below min_loo_success_runs (2) -> refused."""
+    bundle, _ = _cap(n=8, span=90.0)
+    cfg = dataclasses.replace(CFG, leave_one_out=True, leave_one_out_max_runs=1)
+    r = fit_cuboid(bundle, cfg)
+    assert r["success"] is False
+    assert r["reason"] == FailureCode.INSUFFICIENT_STABILITY_EVIDENCE.value
+    assert r["diagnostics"]["leave_one_out_spread"]["successful_runs"] == 1
+
+
+def test_loo_all_subsets_valid_and_stable_succeeds():
+    """C. Every selected subset refits and the spread is tiny -> success, with full
+    LOO evidence reported."""
+    bundle, _ = _cap(n=8, span=90.0)
+    cfg = dataclasses.replace(CFG, leave_one_out=True, leave_one_out_max_runs=3)
+    r = fit_cuboid(bundle, cfg)
+    assert r["success"], r
+    loo = r["diagnostics"]["leave_one_out_spread"]
+    assert loo["successful_runs"] == loo["requested_runs"] >= 2
+    assert loo["failed_runs"] == 0
+
+
+def test_loo_subset_loses_observability_fails_metric():
+    """D. A dropped end-frame pushes some subsets below the view-coverage floor; with
+    every selected subset required, the missing evidence refuses the metric even
+    though the surviving subsets agree (tiny spread)."""
+    bundle, _ = _cap(n=6, span=45.0)
+    cfg = dataclasses.replace(CFG, leave_one_out=True, leave_one_out_max_runs=4)
+    r = fit_cuboid(bundle, cfg, config=ReconstructionConfig(min_view_coverage_deg=45.0))
+    assert r["success"] is False
+    assert r["reason"] == FailureCode.INSUFFICIENT_STABILITY_EVIDENCE.value
+    loo = r["diagnostics"]["leave_one_out_spread"]
+    assert loo["failed_runs"] >= 1
+    assert any(f["reason"] == FailureCode.INSUFFICIENT_VIEW_COVERAGE.value for f in loo["failures"])
+
+
+def test_loo_unconverged_subfit_excluded_from_evidence():
+    """E. A subfit that does not converge is recorded as a failure and its dimensions
+    are NOT counted toward the spread — unconverged geometry is not stability
+    evidence (max_iter=1 cannot shrink the step below min_step)."""
+    bundle, _ = _cap(n=8, span=90.0)
+    cfg = dataclasses.replace(CFG, leave_one_out=True, leave_one_out_max_runs=3, max_iter=1)
+    loo = cf._leave_one_out(bundle, ReconstructionConfig(), cfg, None)
+    assert loo["successful_runs"] == 0
+    assert loo["failed_runs"] == loo["requested_runs"]
+    assert all(f["reason"] == FailureCode.CUBOID_FIT_FAILED.value for f in loo["failures"])
+    assert loo["spread_frac_max"] is None  # no dims from unconverged subfits
 
 
 # --- Fix 13: the 7-DOF fit actually runs (not only constructs) --------------- #

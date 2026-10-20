@@ -97,6 +97,14 @@ class CuboidFitConfig:
     leave_one_out: bool = True
     leave_one_out_max_runs: int = 4
     max_dim_spread_frac: float = 0.10
+    # LOO evidence requirement (only enforced when leave_one_out). A METRIC result
+    # must be backed by enough *successful* LOO subsets — a subset that loses
+    # observability or whose subfit does not converge is a FAILURE, not a pass, so
+    # absence of evidence never counts as stable. Require at least this many
+    # successful runs AND at least this fraction of the requested runs. Default: at
+    # least 2 and every selected subset (the M9 final research config).
+    min_loo_success_runs: int = 2
+    min_loo_success_fraction: float = 1.0
     # Image-resolution gate (image space, GT-free): the smaller side of the observed
     # mask bounding box, minimised over frames, must exceed this many pixels — below
     # it, mask rasterisation dominates and the metric dimension is not reliable.
@@ -710,29 +718,44 @@ def _leave_one_out(bundle: CaptureBundle, config: ReconstructionConfig, cfg: Cub
     n = len(frames)
     drop = np.unique(np.linspace(0, n - 1, min(cfg.leave_one_out_max_runs, n)).astype(int))
     runs: list[tuple[float, float, float]] = []
+    failures: list[dict[str, Any]] = []
     for i in drop:
+        fid = frames[i].frame_id
         subset = frames[:i] + frames[i + 1 :]
         if len(subset) < config.min_frames:
+            failures.append({"dropped_frame_id": fid, "reason": FailureCode.INSUFFICIENT_FRAMES.value})
             continue
         sub = dataclasses.replace(bundle, frames=subset)
         try:
             validate_bundle(sub, config)
             locus, half = estimate_roi(sub, config)
             frame = _resolve_frame(sub, np.asarray(locus, dtype=float), on_plane)
-        except MetricReconstructionError:
-            continue  # dropped frame breaking observability is itself signal
-        p, _, _, _ = _fit_once(frame, _cache_views(subset), np.asarray(locus, dtype=float), half, cfg)
+        except MetricReconstructionError as e:
+            # dropped frame breaking observability is itself (negative) stability signal
+            failures.append({"dropped_frame_id": fid, "reason": e.code.value})
+            continue
+        p, _, _, st = _fit_once(frame, _cache_views(subset), np.asarray(locus, dtype=float), half, cfg)
+        if cfg.require_convergence and not st["optimizer_success"]:
+            # an unconverged subfit is not trustworthy stability evidence — exclude it
+            failures.append({"dropped_frame_id": fid, "reason": FailureCode.CUBOID_FIT_FAILED.value})
+            continue
         p = canonicalise(p)
         runs.append((p.length, p.width, p.height))
+    result: dict[str, Any] = {
+        "requested_runs": len(drop),
+        "successful_runs": len(runs),
+        "failed_runs": len(failures),
+        "failures": failures,
+        "runs": len(runs),  # back-compat alias for successful_runs
+    }
     if len(runs) < 2:
-        return {"runs": len(runs), "spread_frac_max": None}
+        result["spread_frac_max"] = None
+        return result
     arr = np.array(runs)
     frac = (arr.max(axis=0) - arr.min(axis=0)) / np.maximum(arr.mean(axis=0), 1e-9)
-    return {
-        "runs": len(runs),
-        "spread_frac": {"length": float(frac[0]), "width": float(frac[1]), "height": float(frac[2])},
-        "spread_frac_max": float(frac.max()),
-    }
+    result["spread_frac"] = {"length": float(frac[0]), "width": float(frac[1]), "height": float(frac[2])}
+    result["spread_frac_max"] = float(frac.max())
+    return result
 
 
 # --------------------------------------------------------------------------- #
@@ -814,6 +837,7 @@ def fit_cuboid(
         "min_iou": sil["min_iou"],
         "per_frame_iou": sil["per_frame_iou"],
         "boundary_error_px": mean_boundary_px,
+        "boundary_error_frac": mean_boundary_px / diag,
         "min_mask_bbox_px": min_bbox_px,
         "parameter_identifiability": ident,
         "leave_one_out_spread": loo,
@@ -842,18 +866,44 @@ def fit_cuboid(
     }
 
 
+def silhouette_consistent(mean_iou: float, min_iou: float, boundary_frac: float, cfg: CuboidFitConfig) -> bool:
+    """The production silhouette gate: mean/min IoU floors AND the boundary-residual
+    ceiling. Shared so the benchmark's stage accounting cannot claim a stage passed
+    that the real gate would reject."""
+    return (mean_iou >= cfg.min_mean_iou and min_iou >= cfg.min_min_iou
+            and boundary_frac <= cfg.max_boundary_frac)
+
+
+def leave_one_out_evidence_ok(loo: dict, cfg: CuboidFitConfig) -> bool:
+    """Whether the LOO stage passes: enough *successful* subsets (absence of evidence
+    is not stability) AND spread within the threshold. Shared with the benchmark."""
+    successful = int(loo.get("successful_runs", loo.get("runs", 0)))
+    requested = int(loo.get("requested_runs", 0))
+    if successful < cfg.min_loo_success_runs:
+        return False
+    if requested and successful < cfg.min_loo_success_fraction * requested:
+        return False
+    spread = loo.get("spread_frac_max")
+    return spread is None or spread <= cfg.max_dim_spread_frac
+
+
 def _gate(status: dict, sil: dict, ident: dict, loo: dict, boundary_frac: float, cfg: CuboidFitConfig) -> FailureCode | None:
     """The typed failure a cuboid fit must return when the metric dimensions are
     not trustworthy, or ``None`` when every gate passes. Convergence first (the
     optimiser must have actually finished), then silhouette consistency (bad fit),
-    then identifiability (ambiguous), then stability (unstable)."""
+    then identifiability (ambiguous), then stability — which, when leave-one-out is
+    enabled, requires enough successful LOO subsets BEFORE checking the spread."""
     if cfg.require_convergence and not status["converged"]:
         return FailureCode.CUBOID_FIT_FAILED
-    if (sil["mean_iou"] < cfg.min_mean_iou or sil["min_iou"] < cfg.min_min_iou
-            or boundary_frac > cfg.max_boundary_frac):
+    if not silhouette_consistent(sil["mean_iou"], sil["min_iou"], boundary_frac, cfg):
         return FailureCode.INSUFFICIENT_SILHOUETTE_CONSISTENCY
     if not ident["identifiable"]:
         return FailureCode.AMBIGUOUS_CUBOID_FIT
+    if cfg.leave_one_out:
+        successful = int(loo.get("successful_runs", loo.get("runs", 0)))
+        requested = int(loo.get("requested_runs", 0))
+        if successful < cfg.min_loo_success_runs or (requested and successful < cfg.min_loo_success_fraction * requested):
+            return FailureCode.INSUFFICIENT_STABILITY_EVIDENCE
     spread = loo.get("spread_frac_max")
     if spread is not None and spread > cfg.max_dim_spread_frac:
         return FailureCode.UNSTABLE_CUBOID_FIT

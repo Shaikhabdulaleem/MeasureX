@@ -51,6 +51,10 @@ class FailureCode(str, Enum):
     CUBOID_FIT_FAILED = "cuboid_fit_failed"
     AMBIGUOUS_CUBOID_FIT = "ambiguous_cuboid_fit"
     UNSTABLE_CUBOID_FIT = "unstable_cuboid_fit"
+    # Leave-one-out stability was requested but too few subsets could be refit (a
+    # dropped frame made the measurement geometrically unobservable or its subfit did
+    # not converge) — absence of evidence is NOT treated as stable (see cuboid_fit.py).
+    INSUFFICIENT_STABILITY_EVIDENCE = "insufficient_stability_evidence"
     # The projected object is too small (too few mask pixels) to support a reliable
     # metric dimension — image-space quantisation dominates (see cuboid_fit.py).
     INSUFFICIENT_IMAGE_RESOLUTION = "insufficient_image_resolution"

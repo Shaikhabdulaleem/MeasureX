@@ -50,6 +50,8 @@ from measurex_vision.multiview.cuboid_fit import (
     CuboidFitConfig,
     fit_cuboid,
     image_quantization_uncertainty,
+    leave_one_out_evidence_ok,
+    silhouette_consistent,
 )
 from measurex_vision.multiview.schema import CaptureBundle
 from measurex_vision.multiview.synthetic import synthetic_capture
@@ -109,15 +111,16 @@ def _row(carton: str, gt: dict, frames: int, span: float, yaw: float, r: dict, d
     d = r.get("diagnostics", {})
     # Acceptance by gate STAGE (GT-free diagnostics), for the stage breakdown.
     row["optimizer_converged"] = bool(d.get("optimizer_converged", False))
-    sil_ok = bool(d and d.get("mean_iou") is not None
-                  and d["mean_iou"] >= FINAL_CFG.min_mean_iou
-                  and d["min_iou"] >= FINAL_CFG.min_min_iou)
-    row["silhouette_ok"] = sil_ok
+    # Use the EXACT production gate semantics (incl. the boundary-residual ceiling and
+    # the LOO-evidence requirement), not a looser IoU-only approximation.
+    row["silhouette_ok"] = bool(
+        d and d.get("mean_iou") is not None
+        and silhouette_consistent(d["mean_iou"], d["min_iou"],
+                                  d.get("boundary_error_frac", 0.0), FINAL_CFG))
     ident = d.get("parameter_identifiability", {})
     row["identifiable"] = bool(ident.get("identifiable", False))
     loo = d.get("leave_one_out_spread", {})
-    spread = loo.get("spread_frac_max")
-    row["loo_ok"] = bool(spread is None or spread <= FINAL_CFG.max_dim_spread_frac)
+    row["loo_ok"] = bool(d and leave_one_out_evidence_ok(loo, FINAL_CFG))
     if r["success"]:
         row.update(accepted=True, pred=r["dimensions"], err_pct=_signed_err_pct(r["dimensions"], gt),
                    mean_iou=round(d["mean_iou"], 3), min_iou=round(d["min_iou"], 3),
@@ -587,6 +590,13 @@ def render(res: dict, full: bool) -> str:
             L.append(f"| {r['frames']} | {r['span']:.0f} | {r['config']} | **no** | {r['reason']} | | | | {r['runtime_s']} |")
 
     L.append("\n## R. Image resolution 200/480/960 + ±1px quantisation uncertainty\n")
+    L.append("Finding: the worst synthetic errors (~25%) are associated with the low 200px "
+             "image resolution. The resolution diagnostic (`min_mask_bbox_px`, ±1px quantisation "
+             "uncertainty) exists and an `insufficient_image_resolution` gate CAN be enabled "
+             "(`CuboidFitConfig.min_mask_bbox_px`), but it defaults to 0 (disabled) and NO "
+             "production threshold has been calibrated — the runtime gate does not yet prevent "
+             "this by default. Real-device M9 will collect actual mask-pixel coverage and "
+             "quantisation uncertainty before a threshold is chosen (never from one synthetic run).\n")
     L.append("| case | img w | bbox px | accepted | err% L/W/H | meanIoU | minIoU | unc mm L/W/H | s |")
     L.append("|---|---|---|---|---|---|---|---|---|")
     for r in res["resolution"]:
