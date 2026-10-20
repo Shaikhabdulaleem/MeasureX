@@ -137,6 +137,14 @@ def load_raw_capture(path: str) -> RawCapture:
                 raise
             raise RawCaptureError(f"frame {fr.get('frame_id')}: malformed ({e})") from e
 
+    # Frame ids and image paths must be unique: a collision means the capture app
+    # reused an id (e.g. after a failed JPEG write) and one image overwrote another.
+    for label, values in (("frame_id", [f.frame_id for f in frames]),
+                          ("image", [f.image for f in frames])):
+        dupes = sorted({v for v in values if values.count(v) > 1})
+        if dupes:
+            raise RawCaptureError(f"duplicate {label}(s): {dupes}")
+
     gt = doc.get("guidance_target_world")
     return RawCapture(
         pose_source=str(doc.get("pose_source", "arcore")),

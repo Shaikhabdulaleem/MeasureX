@@ -62,6 +62,7 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     private var supportPlane: SupportPlane? = null
     private var controller: CaptureController? = null
     private val frames = mutableListOf<RawFrameData>()
+    private val frameIds = FrameIds()
     private val writes = JpegWrites()
     private var sweepIndex = 1
     private var sessionDir: File? = null
@@ -334,6 +335,7 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
         controller = CaptureController(target!!)
         sessionDir = Exporter.newSessionDir(this, sweepIndex)
         frames.clear()
+        frameIds.reset()
         writes.clear()
         trackingInterruptions = 0
         rejectedDimMismatch = 0
@@ -375,7 +377,7 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
 
             val focal = intr.focalLength
             val principal = intr.principalPoint
-            val frameId = "%06d".format(frames.size + 1)
+            val frameId = frameIds.next()
             val az = ctrl.accept(centre, frameId)
 
             val bmp = YuvToRgb.toBitmap(image)
@@ -472,6 +474,12 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             return
         }
         val referenced = frames.map { it.frameId }
+        // Defensive: a duplicate frame id means an allocation bug; refuse rather than
+        // export a manifest whose images collide on disk.
+        if (referenced.size != referenced.toSet().size) {
+            Toast.makeText(this, R.string.export_incomplete, Toast.LENGTH_SHORT).show()
+            return
+        }
         // Final guard: never ZIP until every referenced image is present and non-empty.
         if (!Exporter.allFramesPresent(dir, referenced)) {
             Toast.makeText(this, R.string.export_wait_writes, Toast.LENGTH_SHORT).show()
@@ -529,6 +537,13 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
     }
 
     private fun startNewSweep() {
+        // Refuse while JPEG writes from the current sweep are still in flight: clearing
+        // the write tracker now would let a stale writer callback mutate the new sweep's
+        // state. The user retries once writes finish.
+        if (writes.pending() > 0) {
+            Toast.makeText(this, R.string.new_sweep_wait_writes, Toast.LENGTH_SHORT).show()
+            return
+        }
         runOnUiThread { exportButton.isEnabled = false }
         // Clear state and recreate the ARCore session on the GL thread so each sweep
         // initialises VIO (world origin + metric scale) independently; poses are never
@@ -541,6 +556,7 @@ class CaptureActivity : AppCompatActivity(), GLSurfaceView.Renderer {
             supportPlane = null
             controller = null
             frames.clear()
+            frameIds.reset()
             writes.clear()
             trackingInterruptions = 0
             rejectedDimMismatch = 0

@@ -29,6 +29,19 @@ class JpegWrites {
 }
 
 /**
+ * Monotonic per-sweep frame-id allocator. An id is never reused within one sweep: a
+ * failed JPEG write drops its frame from the manifest but must NOT decrement the
+ * counter, so the replacement gets a fresh id (ids may have gaps — that is fine).
+ * [reset] is called only when a genuinely new sweep/session starts. Pure Kotlin so
+ * the allocation rule is unit-tested without a device.
+ */
+class FrameIds {
+    private var next = 1
+    fun next(): String = "%06d".format(next++)
+    fun reset() { next = 1 }
+}
+
+/**
  * The CPU image and the declared intrinsics must describe the same pixel grid, or a
  * native orientation/rotation bug has crept in. Pure predicate so the rejection rule
  * is unit-tested (the saved image itself stays unrotated/uncropped/unresized).

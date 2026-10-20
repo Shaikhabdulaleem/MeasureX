@@ -11,6 +11,7 @@
     <string name="checking_support">Checking ARCore support…</string>
     <string name="frame_write_failed">A frame failed to save — keep moving to replace it</string>
     <string name="export_wait_writes">Finishing image writes…</string>
+    <string name="new_sweep_wait_writes">Waiting for image writes…</string>
     <string name="export_incomplete">Capture not ready to export</string>
     <string name="capture_status">Frames: %1$d   Coverage: %2$d°   Tracking drops: %3$d</string>
     <string name="arcore_error">ARCore error: %s</string>

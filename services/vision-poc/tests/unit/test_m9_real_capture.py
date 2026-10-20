@@ -156,6 +156,24 @@ def test_raw_rejects_timestamp_mismatch(tmp_path):
     assert any(c["check"] == "timestamps_paired" and not c["ok"] for c in report["checks"])
 
 
+def test_raw_rejects_duplicate_frame_id(tmp_path):
+    p = _build_raw_dir(tmp_path)
+    doc = json.loads(p.read_text())
+    doc["frames"][1]["frame_id"] = doc["frames"][0]["frame_id"]  # reused id
+    p.write_text(json.dumps(doc))
+    with pytest.raises(RawCaptureError, match="duplicate frame_id"):
+        load_raw_capture(str(p))
+
+
+def test_raw_rejects_duplicate_image_path(tmp_path):
+    p = _build_raw_dir(tmp_path)
+    doc = json.loads(p.read_text())
+    doc["frames"][1]["image"] = doc["frames"][0]["image"]  # one image overwrote another
+    p.write_text(json.dumps(doc))
+    with pytest.raises(RawCaptureError, match="duplicate image"):
+        load_raw_capture(str(p))
+
+
 def test_raw_rejects_non_tracking_frame(tmp_path):
     p = _build_raw_dir(tmp_path)
     doc = json.loads(p.read_text())
