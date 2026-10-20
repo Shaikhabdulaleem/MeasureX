@@ -17,7 +17,7 @@ import dataclasses
 import numpy as np
 import pytest
 
-from measurex_vision.multiview import CuboidFitConfig, fit_cuboid
+from measurex_vision.multiview import CuboidFitConfig, ReconstructionConfig, fit_cuboid
 from measurex_vision.multiview import cuboid_fit as cf
 from measurex_vision.multiview.schema import (
     CaptureBundle,
@@ -212,3 +212,153 @@ def test_modest_pose_noise_still_recovers():
     r = fit_cuboid(bundle, CFG)
     assert r["success"], r
     assert _max_err(r["dimensions"], gt) <= 0.08
+
+
+# --- Fix 1: support-plane scale normalisation -------------------------------- #
+
+def test_scaled_plane_equations_canonicalise_identically():
+    """(n, d) and (k·n, k·d) are the same physical plane; canonicalisation must map
+    all of them to ONE representation AND one cuboid geometry (Fix 1)."""
+    up = np.array([0.0, -1.0, 0.0])  # gravity (0,1,0) -> up (0,-1,0); all planes are y=1
+    planes = [{"normal": [0.0, 1.0, 0.0], "offset": -1.0},
+              {"normal": [0.0, 2.0, 0.0], "offset": -2.0},
+              {"normal": [0.0, -3.0, 0.0], "offset": 3.0}]
+    canon = [canonical_support_plane(p, up) for p in planes]
+    for c in canon:
+        assert np.allclose(c["normal"], canon[0]["normal"])
+        assert c["offset"] == pytest.approx(canon[0]["offset"])
+    assert np.allclose(canon[0]["normal"], [0.0, -1.0, 0.0])
+    assert canon[0]["offset"] == pytest.approx(1.0)
+
+    bundle, _ = _cap()
+    cp = cf.CuboidParameters(cu=0.05, cv=-0.1, cw=0.0, yaw=0.2, length=0.4, width=0.3, height=0.25)
+    verts = []
+    for p in planes:
+        b = dataclasses.replace(bundle, support_plane=dict(p))  # __post_init__ canonicalises
+        verts.append(cf.cuboid_vertices(cp, cf.build_frame(b)))
+    assert np.allclose(verts[0], verts[1])  # same plane -> same box geometry
+    assert np.allclose(verts[0], verts[2])
+
+
+def test_support_offset_scales_when_normal_normalised():
+    """Normalising the normal MUST scale the offset by the same factor, else the
+    plane moves. normal [0,2,0]/offset -2 is the plane y=1, not y=2."""
+    up = np.array([0.0, -1.0, 0.0])
+    c = canonical_support_plane({"normal": [0.0, 2.0, 0.0], "offset": -2.0}, up)
+    assert np.allclose(c["normal"], [0.0, -1.0, 0.0])
+    assert c["offset"] == pytest.approx(1.0)  # NOT 2.0 (the un-scaled-offset bug)
+
+
+# --- Fix 2: optimizer convergence reporting ---------------------------------- #
+
+def test_optimizer_reports_convergence():
+    bundle, _ = _cap(n=8, span=90.0)
+    d = fit_cuboid(bundle, CFG)["diagnostics"]
+    assert d["optimizer_converged"] is True
+    assert d["optimizer_hit_max_iter"] is False
+    assert d["optimizer_success"] is True
+    assert d["optimizer_final_step_size"] >= 0.0
+    assert isinstance(d["optimizer_at_parameter_bound"], bool)
+
+
+def test_max_iter_detected_and_not_reported_successful():
+    """A fit cut off at the iteration cap is NOT reported as a successful optimiser
+    result, and with require_convergence it fails typed (cuboid_fit_failed)."""
+    bundle, _ = _cap(n=8, span=90.0)
+    cfg = dataclasses.replace(CFG, max_iter=1)  # cannot shrink below min_step in 1 sweep
+    r = fit_cuboid(bundle, cfg)
+    assert r["success"] is False
+    assert r["reason"] == FailureCode.CUBOID_FIT_FAILED.value
+    assert r["diagnostics"]["optimizer_hit_max_iter"] is True
+    assert r["diagnostics"]["optimizer_success"] is False
+
+
+# --- Fix 3: full-DOF identifiability ----------------------------------------- #
+
+def test_identifiability_reports_every_fitted_dof():
+    bundle, _ = _cap(n=8, span=90.0)
+    ident = fit_cuboid(bundle, CFG)["diagnostics"]["parameter_identifiability"]
+    for name in ("length", "width", "height", "cu", "cv", "yaw"):
+        assert name in ident["per_dof"]
+    assert ident["identifiable"] is True
+
+
+def test_identifiability_reports_cw_for_7dof():
+    bundle, _ = _cap(n=8, span=90.0)
+    ident = fit_cuboid(bundle, CFG, on_plane=False)["diagnostics"]["parameter_identifiability"]
+    assert "cw" in ident["per_dof"]  # free vertical centre only exists in 7-DOF
+
+
+# --- Fix 4: leak-free leave-one-out ------------------------------------------ #
+
+def test_leave_one_out_revalidates_each_subset():
+    """Every LOO subset is re-validated against the SAME config, so a subset that
+    drops below min_frames is skipped — proving the refit is rebuilt per subset, not
+    run on stale full-sequence geometry. (The old leaky code used a hardcoded floor
+    of 4 and the full-sequence frame/locus.)"""
+    bundle, _ = _cap(n=5, span=90.0)
+    config = ReconstructionConfig(min_frames=5)  # every 4-frame subset is below min
+    loo = cf._leave_one_out(bundle, config, dataclasses.replace(CFG, leave_one_out=True), None)
+    assert loo["runs"] == 0  # all subsets re-validated and rejected (no stale fit)
+
+
+def test_leave_one_out_subset_fit_is_stable_on_good_capture():
+    bundle, _ = _cap(n=8, span=90.0)
+    loo = cf._leave_one_out(bundle, ReconstructionConfig(), dataclasses.replace(CFG, leave_one_out=True), None)
+    assert loo["runs"] >= 2
+    assert loo["spread_frac_max"] < 0.10
+
+
+# --- Fix 13: the 7-DOF fit actually runs (not only constructs) --------------- #
+
+def test_7dof_free_fit_recovers_dimensions():
+    bundle, gt = _cap(n=8, span=90.0)
+    r = fit_cuboid(bundle, CFG, on_plane=False)
+    assert r["success"], r
+    assert r["diagnostics"]["dof"] == 7 and not r["diagnostics"]["on_plane"]
+    assert _max_err(r["dimensions"], gt) <= 0.08
+
+
+# --- Fix 11: resolution helper + typed insufficient-resolution --------------- #
+
+def test_image_quantization_uncertainty_helper():
+    bundle, _ = _cap(n=8, span=90.0, w=200)
+    unc = cf.image_quantization_uncertainty(bundle, CFG)
+    assert unc["runs"] >= 2
+    for k in ("length_mm", "width_mm", "height_mm"):
+        assert unc[k] is not None and unc[k] >= 0.0
+    assert unc["min_mask_bbox_px"] > 0
+
+
+def test_insufficient_image_resolution_typed():
+    bundle, _ = _cap(n=8, span=90.0, w=120)
+    cfg = dataclasses.replace(CFG, min_mask_bbox_px=1e6)  # unreachable floor
+    r = fit_cuboid(bundle, cfg)
+    assert r["success"] is False
+    assert r["reason"] == FailureCode.INSUFFICIENT_IMAGE_RESOLUTION.value
+
+
+# --- Fix 15: pose-scale bias propagates into dimensions ---------------------- #
+
+def test_pose_scale_bias_propagates_into_dimensions():
+    """A correlated +2% scale on every camera translation (+ the plane datum) must
+    propagate ~+2% into dimensions — scale comes from the poses, and the fit does
+    NOT compensate. This defines the metric-pose-provider accuracy requirement."""
+    bundle, _ = _cap(n=8, span=90.0)
+    base = fit_cuboid(bundle, CFG)
+    assert base["success"]
+    bias = 0.02
+    frames = [dataclasses.replace(f, T_world_from_camera=_scale_t(f.T_world_from_camera, bias))
+              for f in bundle.frames]
+    plane = {**bundle.support_plane, "offset": bundle.support_plane["offset"] * (1 + bias)}
+    biased = fit_cuboid(dataclasses.replace(bundle, frames=frames, support_plane=plane), CFG)
+    assert biased["success"]
+    for k in base["dimensions"]:
+        ratio = biased["dimensions"][k] / base["dimensions"][k]
+        assert ratio == pytest.approx(1.0 + bias, abs=0.01)
+
+
+def _scale_t(T: np.ndarray, bias: float) -> np.ndarray:
+    out = T.copy()
+    out[:3, 3] = out[:3, 3] * (1.0 + bias)
+    return out

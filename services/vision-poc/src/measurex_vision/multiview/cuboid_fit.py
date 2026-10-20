@@ -26,6 +26,7 @@ does not replace or delete it.
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -63,9 +64,12 @@ class CuboidFitConfig:
     # Deterministic bounded optimiser (pure-NumPy pattern search, multi-start).
     yaw_starts_deg: tuple[float, ...] = (0.0, 30.0, 60.0)  # [0,90) covers the L/W symmetry
     scale_starts: tuple[float, ...] = (1.0,)  # × ROI half-extent as initial L=W=H
-    max_iter: int = 40
+    max_iter: int = 120                # enough sweeps for the step to shrink to min_step
     step_shrink: float = 0.5
     min_step_frac: float = 1e-3        # stop when every step < this × ROI half-extent
+    require_convergence: bool = True   # fail cuboid_fit_failed if the best start only
+    # stopped because it hit max_iter (never shrank below min_step) — an unconverged
+    # optimiser is not a trustworthy metric result.
     min_dim_m: float = 0.02            # lower dimension bound (operational safety)
     max_dim_roi_mult: float = 4.0      # upper dimension bound = mult × ROI half-extent
     # Silhouette-consistency gate (image space). Provisional floors — the box must
@@ -74,15 +78,31 @@ class CuboidFitConfig:
     min_mean_iou: float = 0.88
     min_min_iou: float = 0.75
     max_boundary_frac: float = 0.05    # boundary residual as a fraction of image diagonal
-    # Identifiability: a dimension perturbed by ``identifiability_rel`` must raise the
-    # loss by at least ``min_identifiability`` — otherwise the dimension is not
-    # observable (a flat objective direction) and the metric result is refused.
-    identifiability_rel: float = 0.15
+    # Identifiability: every fitted DOF is perturbed around the optimum and must
+    # raise the loss by at least ``min_identifiability`` — otherwise that parameter
+    # is not observable (a flat objective direction) and the metric result is
+    # refused. Perturbations are parameter-appropriate: dimensions relative, the
+    # horizontal/vertical centre metric (a fraction of the object scale), yaw
+    # angular.
+    identifiability_rel: float = 0.15             # relative, for L/W/H
+    identifiability_centre_frac: float = 0.15     # × mean object dimension, for the centre
+    identifiability_yaw_deg: float = 10.0         # angular, for yaw
     min_identifiability: float = 0.02
-    # Leave-one-out stability (relative L/W/H spread when dropping one frame).
+    lw_square_tol: float = 0.05        # |L-W|/max(L,W) below this → yaw is exempt from
+    # the gate (a square footprint's yaw is genuinely unobservable but harmless: the
+    # L/W + 90° symmetry means it does not change the measured dimensions).
+    # Leave-one-out stability (relative L/W/H spread when dropping one frame). Each
+    # LOO run rebuilds the locus/ROI/frame from the SUBSET so the omitted frame
+    # contributes nothing (no leakage).
     leave_one_out: bool = True
     leave_one_out_max_runs: int = 4
     max_dim_spread_frac: float = 0.10
+    # Image-resolution gate (image space, GT-free): the smaller side of the observed
+    # mask bounding box, minimised over frames, must exceed this many pixels — below
+    # it, mask rasterisation dominates and the metric dimension is not reliable.
+    # Default 0.0 = disabled (the synthetic grid uses tiny images deliberately);
+    # real captures set it from the quantisation study, not from one carton.
+    min_mask_bbox_px: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -145,6 +165,22 @@ def build_frame(bundle: CaptureBundle) -> CuboidFrame:
     return CuboidFrame(anchor=np.asarray(locus, dtype=float), e1=e1, e2=e2, up=up, on_plane=False)
 
 
+def _resolve_frame(bundle: CaptureBundle, locus: np.ndarray, on_plane: bool | None) -> CuboidFrame:
+    """The fit frame, honouring an explicit ``on_plane`` override (Phase G: report
+    the 6-DOF plane fit and the 7-DOF free fit independently). ``None`` keeps the
+    bundle's natural choice (plane if present, else free)."""
+    frame = build_frame(bundle)
+    if on_plane is None or on_plane == frame.on_plane:
+        return frame
+    if on_plane and bundle.support_plane is None:
+        raise MetricReconstructionError(
+            FailureCode.INVALID_SUPPORT_PLANE, "on_plane requested but bundle has no support plane"
+        )
+    up = up_from_gravity(bundle.gravity_world)
+    e1, e2 = horizontal_basis(up)
+    return CuboidFrame(anchor=np.asarray(locus, dtype=float), e1=e1, e2=e2, up=up, on_plane=False)
+
+
 def _centre_world(p: CuboidParameters, frame: CuboidFrame) -> np.ndarray:
     cw = p.height / 2.0 if frame.on_plane else p.cw  # bottom face on the plane
     return frame.anchor + p.cu * frame.e1 + p.cv * frame.e2 + cw * frame.up
@@ -180,23 +216,84 @@ def cuboid_silhouette(vertices_px: np.ndarray, width: int, height: int) -> np.nd
 
 
 # --- analytic convex-polygon IoU (no rasterisation in the optimiser loop) ----
+#
+# The silhouettes are tiny convex polygons (≤8 vertices), evaluated ~10⁴ times per
+# fit. NumPy's per-call overhead on 2-element arrays dominates there, so the hot
+# scoring path works on plain Python lists of ``(x, y)`` float tuples with scalar
+# arithmetic — the same maths as the earlier array version, ~10× faster. ``*_xy``
+# helpers take/return such lists.
 
-def _signed_area(poly: np.ndarray) -> float:
-    if poly.shape[0] < 3:
+Pt = tuple[float, float]
+
+
+def _signed_area_xy(poly: list[Pt]) -> float:
+    n = len(poly)
+    if n < 3:
         return 0.0
-    x, y = poly[:, 0], poly[:, 1]
-    return 0.5 * float(np.dot(x, np.roll(y, -1)) - np.dot(y, np.roll(x, -1)))
+    s = 0.0
+    x0, y0 = poly[-1]
+    for x1, y1 in poly:
+        s += x0 * y1 - x1 * y0
+        x0, y0 = x1, y1
+    return 0.5 * s
 
 
-def _poly_area(poly: np.ndarray) -> float:
-    """Shoelace area of a simple polygon (vertices in order)."""
-    return abs(_signed_area(poly))
+def _poly_area_xy(poly: list[Pt]) -> float:
+    return abs(_signed_area_xy(poly))
 
 
-def _ccw(poly: np.ndarray) -> np.ndarray:
-    """Reorder to a positive signed area, so winding is fixed regardless of the
-    image y-down axis convention (``_convex_hull_2d`` output is CW in image space)."""
-    return poly[::-1] if _signed_area(poly) < 0 else poly
+def _ccw_xy(poly: list[Pt]) -> list[Pt]:
+    """Reorder to a positive signed area (CCW), fixing winding regardless of the
+    image y-down convention."""
+    return poly[::-1] if _signed_area_xy(poly) < 0 else poly
+
+
+def _poly_centroid_xy(poly: list[Pt]) -> Pt:
+    """True area (centre-of-mass) centroid of a simple polygon — NOT the mean of its
+    vertices, which is biased toward wherever the vertices crowd. This matches the
+    observed-mask centroid (the mean of the filled pixels, an area centroid), so the
+    two centroid terms are the same geometric quantity."""
+    n = len(poly)
+    if n == 0:
+        return (0.0, 0.0)
+    if n < 3:
+        return (sum(p[0] for p in poly) / n, sum(p[1] for p in poly) / n)
+    a = cx = cy = 0.0
+    x0, y0 = poly[-1]
+    for x1, y1 in poly:
+        cr = x0 * y1 - x1 * y0
+        a += cr
+        cx += (x0 + x1) * cr
+        cy += (y0 + y1) * cr
+        x0, y0 = x1, y1
+    a *= 0.5
+    if abs(a) < 1e-12:
+        return (sum(p[0] for p in poly) / n, sum(p[1] for p in poly) / n)
+    return (cx / (6.0 * a), cy / (6.0 * a))
+
+
+def _hull_ccw_xy(points: np.ndarray) -> list[Pt]:
+    """CCW convex hull of a small point set as a list of ``(x, y)`` tuples (Andrew's
+    monotone chain, scalar). Used on the ≤8 projected cuboid vertices every objective
+    evaluation — avoids ``np.unique``/``lexsort`` overhead on a tiny array."""
+    pts = sorted({(float(x), float(y)) for x, y in points})
+    if len(pts) <= 2:
+        return pts
+
+    def cross(o: Pt, a: Pt, b: Pt) -> float:
+        return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+    lower: list[Pt] = []
+    for q in pts:
+        while len(lower) >= 2 and cross(lower[-2], lower[-1], q) <= 0:
+            lower.pop()
+        lower.append(q)
+    upper: list[Pt] = []
+    for q in reversed(pts):
+        while len(upper) >= 2 and cross(upper[-2], upper[-1], q) <= 0:
+            upper.pop()
+        upper.append(q)
+    return lower[:-1] + upper[:-1]
 
 
 def _simplify_convex(hull: np.ndarray, tol_px: float = 2.0) -> np.ndarray:
@@ -220,53 +317,55 @@ def _simplify_convex(hull: np.ndarray, tol_px: float = 2.0) -> np.ndarray:
     return out
 
 
-def _clip_convex(subject: np.ndarray, clip: np.ndarray) -> np.ndarray:
+def _isect_xy(p: Pt, q: Pt, a: Pt, b: Pt) -> Pt:
+    """Intersection of segment ``p→q`` with the infinite line ``a→b`` (scalar)."""
+    rx, ry = q[0] - p[0], q[1] - p[1]
+    sx, sy = b[0] - a[0], b[1] - a[1]
+    denom = rx * sy - ry * sx
+    if abs(denom) < 1e-12:
+        return q
+    t = ((a[0] - p[0]) * sy - (a[1] - p[1]) * sx) / denom
+    return (p[0] + t * rx, p[1] + t * ry)
+
+
+def _clip_convex_xy(subject: list[Pt], clip: list[Pt]) -> list[Pt]:
     """Sutherland–Hodgman clip of convex ``subject`` by convex ``clip`` (both CCW).
-    Returns the intersection polygon's vertices (possibly empty)."""
+    Scalar, on ``(x, y)`` tuple lists. Returns the intersection polygon (maybe
+    empty)."""
     out = subject
-    m = clip.shape[0]
+    m = len(clip)
     for i in range(m):
-        if out.shape[0] == 0:
+        if not out:
             break
-        a = clip[i]
-        b = clip[(i + 1) % m]
-        ex, ey = b[0] - a[0], b[1] - a[1]
-        side = ex * (out[:, 1] - a[1]) - ey * (out[:, 0] - a[0])  # >=0 is inside (CCW)
-        new: list[np.ndarray] = []
-        n = out.shape[0]
+        ax, ay = clip[i]
+        bx, by = clip[(i + 1) % m]
+        ex, ey = bx - ax, by - ay
+        new: list[Pt] = []
+        n = len(out)
+        prv = out[-1]
+        dp = ex * (prv[1] - ay) - ey * (prv[0] - ax)  # >=0 is inside (CCW)
         for j in range(n):
-            cur, prv = out[j], out[j - 1]
-            dc, dp = side[j], side[j - 1]
+            cur = out[j]
+            dc = ex * (cur[1] - ay) - ey * (cur[0] - ax)
             if dc >= 0:
                 if dp < 0:
-                    new.append(_seg_line_isect(prv, cur, a, b))
+                    new.append(_isect_xy(prv, cur, (ax, ay), (bx, by)))
                 new.append(cur)
             elif dp >= 0:
-                new.append(_seg_line_isect(prv, cur, a, b))
-        out = np.array(new) if new else np.empty((0, 2))
+                new.append(_isect_xy(prv, cur, (ax, ay), (bx, by)))
+            prv, dp = cur, dc
+        out = new
     return out
 
 
-def _seg_line_isect(p: np.ndarray, q: np.ndarray, a: np.ndarray, b: np.ndarray) -> np.ndarray:
-    """Intersection of segment ``p→q`` with the infinite line ``a→b``."""
-    r = q - p
-    s = b - a
-    denom = r[0] * s[1] - r[1] * s[0]
-    if abs(denom) < 1e-12:
-        return q
-    t = ((a[0] - p[0]) * s[1] - (a[1] - p[1]) * s[0]) / denom
-    return p + t * r
-
-
-def _poly_iou(pred_hull: np.ndarray, obs_hull: np.ndarray) -> float:
-    """IoU of two convex polygons (CCW). Exact and fast — the carton silhouette is
-    convex, so both the projected cuboid and the observed mask are represented by
-    their convex hulls."""
-    pred, obs = _ccw(pred_hull), _ccw(obs_hull)
-    ap, ao = _poly_area(pred), _poly_area(obs)
+def _poly_iou_xy(pred: list[Pt], obs: list[Pt]) -> float:
+    """IoU of two convex polygons (CCW ``(x, y)`` lists). Exact — both the projected
+    cuboid and the observed mask are convex, so each is its convex hull."""
+    pred, obs = _ccw_xy(pred), _ccw_xy(obs)
+    ap, ao = _poly_area_xy(pred), _poly_area_xy(obs)
     if ap <= 0 or ao <= 0:
         return 0.0
-    inter = _poly_area(_clip_convex(pred, obs))
+    inter = _poly_area_xy(_clip_convex_xy(pred, obs))
     union = ap + ao - inter
     return inter / union if union > 0 else 0.0
 
@@ -278,8 +377,8 @@ def _poly_iou(pred_hull: np.ndarray, obs_hull: np.ndarray) -> float:
 @dataclass
 class _ViewCache:
     P: np.ndarray              # 3x4 world->pixel projection (precomputed; the hot path)
-    obs_hull: np.ndarray       # CCW convex hull of the observed mask (the box silhouette)
-    obs_centroid: np.ndarray   # (x, y)
+    obs_xy: list[Pt]           # CCW convex hull of the observed mask as (x,y) tuples
+    obs_centroid: Pt           # (x, y) area centroid of the mask
     diag: float                # image diagonal (px) for normalisation
 
 
@@ -288,21 +387,58 @@ def _cache_views(frames: list[ViewFrame]) -> list[_ViewCache]:
     for f in frames:
         ys, xs = np.nonzero(f.mask)
         pts = np.stack([xs, ys], axis=-1).astype(float)
+        obs = _simplify_convex(_convex_hull_2d(pts))
         caches.append(_ViewCache(
             P=cam.projection_matrix(f.intrinsics, f.T_world_from_camera),
-            obs_hull=_simplify_convex(_convex_hull_2d(pts)),
-            obs_centroid=np.array([xs.mean(), ys.mean()]),
+            obs_xy=_ccw_xy([(float(x), float(y)) for x, y in obs]),
+            obs_centroid=(float(xs.mean()), float(ys.mean())),
             diag=float(np.hypot(f.width, f.height)),
         ))
     return caches
 
 
-def _chamfer(a: np.ndarray, b: np.ndarray) -> float:
-    """Symmetric mean nearest-vertex distance between two small point sets (px)."""
-    if a.shape[0] == 0 or b.shape[0] == 0:
+def _min_mask_bbox_px(bundle: CaptureBundle) -> float:
+    """The smaller side of each observed mask's bounding box, minimised over frames
+    (px) — a GT-free proxy for how well-resolved the object is. Masks are non-empty
+    (checked in ``validate_bundle``)."""
+    sides = []
+    for f in bundle.frames:
+        ys, xs = np.nonzero(f.mask)
+        sides.append(min(int(ys.max() - ys.min()) + 1, int(xs.max() - xs.min()) + 1))
+    return float(min(sides)) if sides else 0.0
+
+
+def _mean_point_to_edges_xy(points: list[Pt], poly: list[Pt]) -> float:
+    """Mean distance from each point to the nearest EDGE (segment) of a closed
+    polygon — a true point-to-contour distance, not point-to-nearest-vertex. Scalar
+    over tiny polygons."""
+    m = len(poly)
+    total = 0.0
+    for px, py in points:
+        best = float("inf")
+        for i in range(m):
+            ax, ay = poly[i]
+            bx, by = poly[(i + 1) % m]
+            abx, aby = bx - ax, by - ay
+            d2 = abx * abx + aby * aby
+            t = 0.0 if d2 < 1e-12 else ((px - ax) * abx + (py - ay) * aby) / d2
+            t = max(0.0, min(1.0, t))
+            dx, dy = px - (ax + t * abx), py - (ay + t * aby)
+            best = min(best, dx * dx + dy * dy)
+        total += best ** 0.5
+    return total / len(points)
+
+
+def _boundary_distance_xy(a: list[Pt], b: list[Pt]) -> float:
+    """Symmetric mean point-to-contour distance between two convex polygons (px).
+
+    Each polygon's vertices are measured to the nearest EDGE of the other, so two
+    silhouettes sharing an edge but with vertices at different places along it score
+    ~0 (a vertex-to-vertex nearest distance would not). A weak boundary regulariser /
+    diagnostic — IoU remains the primary silhouette evidence."""
+    if len(a) < 2 or len(b) < 2:
         return float("inf")
-    d = np.linalg.norm(a[:, None, :] - b[None, :, :], axis=2)
-    return float(0.5 * (d.min(axis=1).mean() + d.min(axis=0).mean()))
+    return 0.5 * (_mean_point_to_edges_xy(a, b) + _mean_point_to_edges_xy(b, a))
 
 
 def per_frame_iou(p: CuboidParameters, frame: CuboidFrame, caches: list[_ViewCache]) -> dict[str, Any]:
@@ -322,10 +458,11 @@ def per_frame_iou(p: CuboidParameters, frame: CuboidFrame, caches: list[_ViewCac
             centroids.append(1.0)
             boundaries.append(1.0)
             continue
-        pred_hull = _simplify_convex(_convex_hull_2d(px))
-        ious.append(_poly_iou(pred_hull, c.obs_hull))
-        centroids.append(float(np.linalg.norm(pred_hull.mean(axis=0) - c.obs_centroid) / c.diag))
-        boundaries.append(_chamfer(pred_hull, c.obs_hull) / c.diag)
+        pred = _hull_ccw_xy(px)
+        ious.append(_poly_iou_xy(pred, c.obs_xy))
+        cen = _poly_centroid_xy(pred)
+        centroids.append(np.hypot(cen[0] - c.obs_centroid[0], cen[1] - c.obs_centroid[1]) / c.diag)
+        boundaries.append(_boundary_distance_xy(pred, c.obs_xy) / c.diag)
     return {
         "per_frame_iou": ious,
         "mean_iou": float(np.mean(ious)),
@@ -386,13 +523,20 @@ def _bounds(frame: CuboidFrame, locus: np.ndarray, half: float, cfg: CuboidFitCo
 def _pattern_search(
     x0: np.ndarray, lo: np.ndarray, hi: np.ndarray, step0: np.ndarray,
     objective, cfg: CuboidFitConfig, min_step: float,
-) -> tuple[np.ndarray, float, int]:
+) -> tuple[np.ndarray, float, dict[str, Any]]:
     """Hooke–Jeeves coordinate pattern search with shrinking steps. Deterministic
-    (no RNG); hard-bounded by ``[lo, hi]``."""
+    (no RNG); hard-bounded by ``[lo, hi]``.
+
+    Reports the real termination reason, not an unconditional success: ``converged``
+    is True only when the step actually shrank below ``min_step``; ``hit_max_iter``
+    means the loop stopped at the iteration cap while still moving/shrinking.
+    ``at_parameter_bound`` flags that the optimum sits against a box bound (recorded,
+    not by itself a rejection — the geometry may legitimately support it)."""
     x = np.clip(x0, lo, hi)
     fx = objective(x)
     step = step0.copy()
     iters = 0
+    converged = False
     while iters < cfg.max_iter:
         improved = False
         for i in range(len(x)):
@@ -407,8 +551,18 @@ def _pattern_search(
         if not improved:
             step = step * cfg.step_shrink
             if np.all(step < min_step):
+                converged = True
                 break
-    return x, fx, iters
+    span = np.maximum(hi - lo, 1e-12)
+    at_bound = bool(np.any((x - lo) / span < 1e-3) or np.any((hi - x) / span < 1e-3))
+    status = {
+        "iterations": iters,
+        "converged": converged,
+        "hit_max_iter": (not converged) and iters >= cfg.max_iter,
+        "final_step_size": float(np.max(step)),
+        "at_parameter_bound": at_bound,
+    }
+    return x, fx, status
 
 
 # --------------------------------------------------------------------------- #
@@ -444,7 +598,7 @@ def _fit_once(frame: CuboidFrame, caches: list[_ViewCache], locus: np.ndarray, h
     def objective_vec(x: np.ndarray) -> float:
         return _loss(_unpack(x, frame), frame, caches, cfg)
 
-    best: tuple[np.ndarray, float] | None = None
+    best: tuple[np.ndarray, float, dict[str, Any]] | None = None
     first_initial = None
     total_iters = 0
     starts = 0
@@ -460,60 +614,114 @@ def _fit_once(frame: CuboidFrame, caches: list[_ViewCache], locus: np.ndarray, h
                 step0 = np.array([half * 0.3, half * 0.3, half * 0.3, np.radians(20), dim0 * 0.5, dim0 * 0.5, dim0 * 0.5])
             if first_initial is None:
                 first_initial = objective_vec(np.clip(x0, lo, hi))
-            xf, ff, it = _pattern_search(x0, lo, hi, step0, objective_vec, cfg, min_step)
-            total_iters += it
+            xf, ff, st = _pattern_search(x0, lo, hi, step0, objective_vec, cfg, min_step)
+            total_iters += st["iterations"]
             starts += 1
             if best is None or ff < best[1]:
-                best = (xf, ff)
+                best = (xf, ff, st)
     assert best is not None
     params = _unpack(best[0], frame)
-    status = {"optimizer_success": True, "iterations": total_iters, "starts": starts}
+    bst = best[2]
+    # The optimiser is "successful" only when the winning start actually converged
+    # (step shrank below min_step), not merely because it returned a value. A bound
+    # contact is recorded but does not by itself fail the fit.
+    status = {
+        "optimizer_success": bool(bst["converged"]),
+        "converged": bool(bst["converged"]),
+        "hit_max_iter": bool(bst["hit_max_iter"]),
+        "final_step_size": float(bst["final_step_size"]),
+        "at_parameter_bound": bool(bst["at_parameter_bound"]),
+        "iterations": total_iters,
+        "starts": starts,
+    }
     return params, float(first_initial), float(best[1]), status
 
 
 def _identifiability(p: CuboidParameters, frame: CuboidFrame, caches: list[_ViewCache], base_loss: float, cfg: CuboidFitConfig) -> dict[str, Any]:
-    """Perturb L/W/H around the optimum and measure how much silhouette loss rises.
-    A dimension whose perturbation barely changes the loss is not observable — the
-    fit is ambiguous even though the optimiser converged."""
-    out: dict[str, float] = {}
-    worst = float("inf")
-    for name in ("length", "width", "height"):
+    """Perturb **every fitted DOF** around the optimum and measure how much
+    silhouette loss rises. A parameter whose perturbation barely changes the loss is
+    not observable — the fit is ambiguous even though the optimiser converged.
+
+    Perturbations are parameter-appropriate (the M9 spec): dimensions relative, the
+    horizontal/vertical centre metric (a fraction of the object scale), yaw angular.
+    The fitted DOF are centre (cu, cv [, cw for 7-DOF]) + yaw + L/W/H.
+
+    The ``(L, W, yaw) ≡ (W, L, yaw+90°)`` symmetry means a square footprint has an
+    unobservable yaw that does **not** change the measured dimensions — so yaw is
+    reported but exempt from the gate when ``|L-W|/max(L,W) < lw_square_tol``. GT is
+    never used."""
+    mean_dim = (abs(p.length) + abs(p.width) + abs(p.height)) / 3.0
+    centre_delta = cfg.identifiability_centre_frac * mean_dim
+    yaw_delta = np.radians(cfg.identifiability_yaw_deg)
+    specs = [
+        ("length", cfg.identifiability_rel * abs(p.length)),
+        ("width", cfg.identifiability_rel * abs(p.width)),
+        ("height", cfg.identifiability_rel * abs(p.height)),
+        ("cu", centre_delta),
+        ("cv", centre_delta),
+        ("yaw", yaw_delta),
+    ]
+    if not frame.on_plane:
+        specs.insert(5, ("cw", centre_delta))
+
+    square = abs(p.length - p.width) / max(abs(p.length), abs(p.width), 1e-9) < cfg.lw_square_tol
+    per_dof: dict[str, float] = {}
+    gated = []
+    for name, delta in specs:
         val = getattr(p, name)
-        delta = cfg.identifiability_rel * val
-        rises = []
-        for sgn in (1.0, -1.0):
-            perturbed = _replace_dim(p, name, val + sgn * delta)
-            rises.append(_loss(perturbed, frame, caches, cfg) - base_loss)
+        rises = [
+            _loss(_replace_param(p, name, val + sgn * delta), frame, caches, cfg) - base_loss
+            for sgn in (1.0, -1.0)
+        ]
         sensitivity = float(min(rises))  # the easiest direction to move without cost
-        out[name] = sensitivity
-        worst = min(worst, sensitivity)
-    out["min_sensitivity"] = worst
-    out["identifiable"] = bool(worst >= cfg.min_identifiability)
-    return out
+        per_dof[name] = sensitivity
+        if name == "yaw" and square:
+            continue  # square footprint: yaw is unobservable but harmless (symmetry)
+        gated.append(sensitivity)
+    worst = float(min(gated))
+    return {
+        **per_dof,
+        "per_dof": per_dof,
+        "square_footprint": bool(square),
+        "min_sensitivity": worst,
+        "identifiable": bool(worst >= cfg.min_identifiability),
+    }
 
 
-def _replace_dim(p: CuboidParameters, name: str, value: float) -> CuboidParameters:
-    kw = p.as_dict()
-    return CuboidParameters(
-        cu=kw["centre_u_m"], cv=kw["centre_v_m"], cw=kw["centre_w_m"], yaw=kw["yaw_rad"],
-        length=value if name == "length" else p.length,
-        width=value if name == "width" else p.width,
-        height=value if name == "height" else p.height,
-    )
+def _replace_param(p: CuboidParameters, name: str, value: float) -> CuboidParameters:
+    """Return ``p`` with one named parameter (cu/cv/cw/yaw/length/width/height)
+    replaced — used by the identifiability perturbations."""
+    fields = {"cu": p.cu, "cv": p.cv, "cw": p.cw, "yaw": p.yaw,
+              "length": p.length, "width": p.width, "height": p.height}
+    fields[name] = value
+    return CuboidParameters(**fields)
 
 
-def _leave_one_out(frames: list[ViewFrame], frame: CuboidFrame, locus: np.ndarray, half: float, cfg: CuboidFitConfig) -> dict[str, Any]:
+def _leave_one_out(bundle: CaptureBundle, config: ReconstructionConfig, cfg: CuboidFitConfig, on_plane: bool | None) -> dict[str, Any]:
     """Refit dropping one frame at a time; report the relative L/W/H spread. A
-    practical METRIC measurement must not swing when a single view is removed."""
+    practical METRIC measurement must not swing when a single view is removed.
+
+    **Leak-free (Phase K fix):** every subset rebuilds its OWN locus, ROI half-extent
+    and cuboid frame from only the frames it keeps, so the omitted frame contributes
+    nothing to the refit — not through the object locus, the ROI, or the frame
+    anchor. A subset that breaks observability when a frame is dropped is skipped
+    (that is itself stability signal), not fitted on stale geometry."""
+    frames = bundle.frames
     n = len(frames)
     drop = np.unique(np.linspace(0, n - 1, min(cfg.leave_one_out_max_runs, n)).astype(int))
     runs: list[tuple[float, float, float]] = []
     for i in drop:
         subset = frames[:i] + frames[i + 1 :]
-        if len(subset) < 4:
+        if len(subset) < config.min_frames:
             continue
-        caches = _cache_views(subset)
-        p, _, _, _ = _fit_once(frame, caches, locus, half, cfg)
+        sub = dataclasses.replace(bundle, frames=subset)
+        try:
+            validate_bundle(sub, config)
+            locus, half = estimate_roi(sub, config)
+            frame = _resolve_frame(sub, np.asarray(locus, dtype=float), on_plane)
+        except MetricReconstructionError:
+            continue  # dropped frame breaking observability is itself signal
+        p, _, _, _ = _fit_once(frame, _cache_views(subset), np.asarray(locus, dtype=float), half, cfg)
         p = canonicalise(p)
         runs.append((p.length, p.width, p.height))
     if len(runs) < 2:
@@ -556,19 +764,19 @@ def fit_cuboid(
     try:
         validate_bundle(bundle, config)
         locus, half = estimate_roi(bundle, config)
+        frame = _resolve_frame(bundle, np.asarray(locus, dtype=float), on_plane)
     except MetricReconstructionError as e:
         return {"success": False, "measurement_tier": "metric", "method": "multiview_cuboid_fit",
                 "reason": e.code.value, "detail": e.detail, "frames_total": frames_total}
 
-    frame = build_frame(bundle)
-    if on_plane is not None and on_plane != frame.on_plane:
-        if on_plane and bundle.support_plane is None:
-            return {"success": False, "measurement_tier": "metric", "method": "multiview_cuboid_fit",
-                    "reason": FailureCode.INVALID_SUPPORT_PLANE.value,
-                    "detail": "on_plane requested but bundle has no support plane", "frames_total": frames_total}
-        up = up_from_gravity(bundle.gravity_world)
-        e1, e2 = horizontal_basis(up)
-        frame = CuboidFrame(anchor=np.asarray(locus, dtype=float), e1=e1, e2=e2, up=up, on_plane=False)
+    # Image-resolution gate (GT-free): below a minimum observed mask bbox the metric
+    # dimension is dominated by mask rasterisation — refuse rather than fabricate.
+    min_bbox_px = _min_mask_bbox_px(bundle)
+    if cfg.min_mask_bbox_px > 0 and min_bbox_px < cfg.min_mask_bbox_px:
+        return {"success": False, "measurement_tier": "metric", "method": "multiview_cuboid_fit",
+                "reason": FailureCode.INSUFFICIENT_IMAGE_RESOLUTION.value,
+                "detail": f"min mask bbox {min_bbox_px:.0f}px < required {cfg.min_mask_bbox_px:.0f}px",
+                "frames_total": frames_total}
 
     caches = _cache_views(bundle.frames)
     t1 = time.perf_counter()
@@ -582,7 +790,7 @@ def fit_cuboid(
     t2 = time.perf_counter()
     loo: dict[str, Any] = {"runs": 0, "spread_frac_max": None}
     if cfg.leave_one_out:
-        loo = _leave_one_out(bundle.frames, frame, np.asarray(locus, dtype=float), half, cfg)
+        loo = _leave_one_out(bundle, config, cfg, on_plane)
     timings["leave_one_out_ms"] = (time.perf_counter() - t2) * 1000
 
     obs = observability_metrics(bundle, sil["per_frame_iou"])
@@ -594,6 +802,10 @@ def fit_cuboid(
         "on_plane": frame.on_plane,
         "parameters": params.as_dict(),
         "optimizer_success": status["optimizer_success"],
+        "optimizer_converged": status["converged"],
+        "optimizer_hit_max_iter": status["hit_max_iter"],
+        "optimizer_final_step_size": status["final_step_size"],
+        "optimizer_at_parameter_bound": status["at_parameter_bound"],
         "iterations": status["iterations"],
         "starts": status["starts"],
         "initial_loss": initial_loss,
@@ -602,6 +814,7 @@ def fit_cuboid(
         "min_iou": sil["min_iou"],
         "per_frame_iou": sil["per_frame_iou"],
         "boundary_error_px": mean_boundary_px,
+        "min_mask_bbox_px": min_bbox_px,
         "parameter_identifiability": ident,
         "leave_one_out_spread": loo,
         "pose_baseline_mm": obs["total_baseline_mm"],
@@ -611,7 +824,7 @@ def fit_cuboid(
     }
 
     dims = metres_to_dimensions(params.length, params.width, params.height)
-    reason = _gate(sil, ident, loo, mean_boundary_px / diag, cfg)
+    reason = _gate(status, sil, ident, loo, mean_boundary_px / diag, cfg)
     if reason is not None:
         return {"success": False, "measurement_tier": "metric", "method": "multiview_cuboid_fit",
                 "reason": reason.value, "frames_total": frames_total,
@@ -629,10 +842,13 @@ def fit_cuboid(
     }
 
 
-def _gate(sil: dict, ident: dict, loo: dict, boundary_frac: float, cfg: CuboidFitConfig) -> FailureCode | None:
+def _gate(status: dict, sil: dict, ident: dict, loo: dict, boundary_frac: float, cfg: CuboidFitConfig) -> FailureCode | None:
     """The typed failure a cuboid fit must return when the metric dimensions are
-    not trustworthy, or ``None`` when every gate passes. Silhouette consistency
-    first (bad fit), then identifiability (ambiguous), then stability (unstable)."""
+    not trustworthy, or ``None`` when every gate passes. Convergence first (the
+    optimiser must have actually finished), then silhouette consistency (bad fit),
+    then identifiability (ambiguous), then stability (unstable)."""
+    if cfg.require_convergence and not status["converged"]:
+        return FailureCode.CUBOID_FIT_FAILED
     if (sil["mean_iou"] < cfg.min_mean_iou or sil["min_iou"] < cfg.min_min_iou
             or boundary_frac > cfg.max_boundary_frac):
         return FailureCode.INSUFFICIENT_SILHOUETTE_CONSISTENCY
@@ -642,3 +858,62 @@ def _gate(sil: dict, ident: dict, loo: dict, boundary_frac: float, cfg: CuboidFi
     if spread is not None and spread > cfg.max_dim_spread_frac:
         return FailureCode.UNSTABLE_CUBOID_FIT
     return None
+
+
+# --------------------------------------------------------------------------- #
+# Phase K2 — image-space quantisation uncertainty (GT-free observability)
+# --------------------------------------------------------------------------- #
+
+def _dilate1(mask: np.ndarray) -> np.ndarray:
+    """4-neighbour 1-pixel dilation (grow the silhouette by ~1px)."""
+    m = mask.copy()
+    m[1:, :] |= mask[:-1, :]
+    m[:-1, :] |= mask[1:, :]
+    m[:, 1:] |= mask[:, :-1]
+    m[:, :-1] |= mask[:, 1:]
+    return m
+
+
+def _erode1(mask: np.ndarray) -> np.ndarray:
+    """4-neighbour 1-pixel erosion (shrink the silhouette by ~1px)."""
+    return ~_dilate1(~mask)
+
+
+def image_quantization_uncertainty(
+    bundle: CaptureBundle,
+    cfg: CuboidFitConfig | None = None,
+    *,
+    config: ReconstructionConfig | None = None,
+    on_plane: bool | None = None,
+) -> dict[str, Any]:
+    """Estimate the metric dimension uncertainty (mm) from image-space quantisation,
+    **without ground truth**: perturb every observed silhouette boundary by ~±1px
+    (erode / dilate), refit, and report the half-range of L/W/H across the nominal,
+    eroded and dilated fits. A large uncertainty relative to the dimension means the
+    measurement is limited by pixel coverage, not by the algorithm — the signal for
+    an ``insufficient_image_resolution`` decision on a real capture.
+
+    Refits are run with leave-one-out disabled (this is a per-mask perturbation
+    study, not a stability study) so it stays cheap enough to call per case."""
+    cfg = dataclasses.replace(cfg or CuboidFitConfig(), leave_one_out=False, require_convergence=False)
+    variants: dict[str, tuple[float, float, float]] = {}
+    for name, op in (("nominal", None), ("eroded", _erode1), ("dilated", _dilate1)):
+        frames = (bundle.frames if op is None
+                  else [dataclasses.replace(f, mask=op(f.mask)) for f in bundle.frames])
+        if any(not f.mask.any() for f in frames):
+            continue  # erosion wiped a thin silhouette — skip that variant
+        r = fit_cuboid(dataclasses.replace(bundle, frames=frames), cfg, config=config, on_plane=on_plane)
+        d = r.get("dimensions") or r.get("debug_dimensions_mm")
+        if d is not None:
+            variants[name] = (d["length_mm"], d["width_mm"], d["height_mm"])
+    if len(variants) < 2:
+        return {"runs": len(variants), "length_mm": None, "width_mm": None, "height_mm": None,
+                "min_mask_bbox_px": _min_mask_bbox_px(bundle)}
+    arr = np.array(list(variants.values()), dtype=float)
+    unc = (arr.max(axis=0) - arr.min(axis=0)) / 2.0
+    return {
+        "runs": len(variants),
+        "length_mm": float(unc[0]), "width_mm": float(unc[1]), "height_mm": float(unc[2]),
+        "min_mask_bbox_px": _min_mask_bbox_px(bundle),
+        "variants": {k: [float(x) for x in v] for k, v in variants.items()},
+    }

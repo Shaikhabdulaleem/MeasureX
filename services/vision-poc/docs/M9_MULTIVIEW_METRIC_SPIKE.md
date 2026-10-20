@@ -157,9 +157,12 @@ gravity-up — a floor, not an arbitrary tilt).
 `insufficient_frames`, `insufficient_baseline`, `insufficient_view_coverage`,
 `invalid_gravity`, `invalid_support_plane`, `mask_mismatch`,
 `reconstruction_failed`, `insufficient_hull_support`, `unstable_reconstruction`,
-`insufficient_silhouette_consistency`. A METRIC request with no metric pose source
-fails with `metric_pose_unavailable`; it never silently runs monocular depth and
-calls the output METRIC.
+`insufficient_silhouette_consistency`. The parametric cuboid fit adds
+`cuboid_fit_failed` (optimiser did not converge), `ambiguous_cuboid_fit` (a fitted
+DOF is unobservable), `unstable_cuboid_fit` (leave-one-out spread too large), and
+`insufficient_image_resolution` (object too small in pixels). A METRIC request with
+no metric pose source fails with `metric_pose_unavailable`; it never silently runs
+monocular depth and calls the output METRIC.
 
 ## Synthetic validation
 
@@ -344,72 +347,163 @@ a scale, and must never introduce a correction factor.
 - **Objective (silhouette agreement, GT-free):** per frame, the candidate box is
   projected and its exact convex silhouette is compared to the observed mask by
   **IoU** (computed analytically as a convex-polygon intersection, not rasterised in
-  the loop), plus small mask-centroid and boundary (Chamfer) regularisers. IoU is
-  symmetric — an oversized box spills outside the mask and is penalised — unlike the
-  hull's "fraction of surviving voxels inside the mask".
+  the loop), plus small mask-centroid and boundary regularisers. The centroid term
+  compares the **true polygon-area centroid** of the predicted silhouette to the
+  mask's area centroid (same geometric quantity on both sides — not the mean of the
+  projected vertices). The boundary term is a true **point-to-contour** distance
+  (each vertex to the nearest edge of the other polygon), not a vertex-to-vertex
+  nearest distance. IoU is symmetric — an oversized box spills outside the mask and
+  is penalised — unlike the hull's "fraction of surviving voxels inside the mask".
+  The scoring primitives run as scalar Python over the ≤8-vertex polygons (~10× the
+  array version) so the full grid is tractable; the maths is unchanged (the unit
+  tests lock it).
 - **Optimiser:** a deterministic, hard-bounded pure-NumPy pattern search
   (Hooke–Jeeves) from several generic yaw/scale starts. Initialisation (centre, scale,
   yaw) comes from the multi-view mask locus and the mask-solid-angle ROI — **never**
-  from ground truth; bounds come from capture geometry, not a known box size.
+  from ground truth; bounds come from capture geometry, not a known box size. The
+  optimiser reports its **real termination** — `converged` (the step shrank below
+  the tolerance), `hit_max_iter`, `final_step_size`, `at_parameter_bound`,
+  `iterations` — and a fit that stops only because it hit the iteration cap is **not**
+  reported as a successful optimiser result (it fails `cuboid_fit_failed`). A bound
+  contact is recorded but does not by itself fail the fit.
 - **Observability gates (typed failures, never a silent bad dimension):**
-  `insufficient_silhouette_consistency` (mean/min IoU or boundary residual),
-  `ambiguous_cuboid_fit` (perturbing a dimension around the optimum barely changes
-  the loss → a flat, unobservable direction), `unstable_cuboid_fit` (leave-one-frame-
-  out L/W/H spread too large). Thresholds are explicit, image-space and object-
-  independent (not tuned per carton).
+  `cuboid_fit_failed` (optimiser did not converge), `insufficient_silhouette_consistency`
+  (mean/min IoU or boundary residual), `ambiguous_cuboid_fit` (perturbing **any
+  fitted DOF** — centre u/v[/w], yaw, L/W/H, each with a parameter-appropriate
+  perturbation — barely changes the loss → a flat, unobservable direction; yaw is
+  exempt for a near-square footprint, where the L/W + 90° symmetry makes it
+  unobservable but harmless), `unstable_cuboid_fit` (leave-one-frame-out L/W/H spread
+  too large), and an optional `insufficient_image_resolution` (observed mask bbox
+  below a GT-free pixel floor — off by default on the deliberately tiny synthetic
+  grid, calibrated from the ±1 px quantisation study for real captures). **The
+  leave-one-out refit is leak-free:** every subset rebuilds its own object locus,
+  ROI and cuboid frame from only the frames it keeps, so the omitted frame
+  contributes nothing. Thresholds are explicit, image-space and object-independent
+  (not tuned per carton).
 
-### Result: the carton prior solves the short sweep
+### Result: the full spec grid (400 exact-pose sequences, complete gate)
 
-On the **same** practical short-sweep captures that the generic visual hull failed
-(it over-estimated length by ~+100%), the cuboid fit recovers L/W/H on exact poses
-to within ~1% typically, well under the ≤2% exact-pose target — including a 30°/6-
-frame sweep, non-zero carton yaw, and the 7-DOF no-plane configuration. Metric-scale
-equivariance holds (2× scene + 2× camera translations → 2.00× dimensions). Mask
-errors and pose noise either stay within the gate or are rejected with a typed
-failure; results are never silently wrong.
+The headline numbers below come from the **full 400-sequence spec grid** (5 sizes ×
+4 yaws × frames {6,8,10,12} × spans {30,45,60,90,120}°) with the **complete metric
+gate including leave-one-out** — not a hand-picked quick grid. A bounded LOO (3
+leak-free refits) and the GT-free gates decide acceptance; ground truth is compared
+only after the fact.
 
-> Reproduce (research artifact, not run in CI — the pure-NumPy optimiser is minutes,
-> not the warehouse speed target):
+> Reproduce (research artifact, not run in CI — the pure-NumPy optimiser is ~an hour
+> for the full grid, not the warehouse speed target):
 >
 > ```bash
-> python scripts/m9_cuboid_proof.py          # quick representative grid
-> python scripts/m9_cuboid_proof.py --full   # full size × yaw × frames × span grid
+> python scripts/m9_cuboid_proof.py           # quick developer grid (fast)
+> python scripts/m9_cuboid_proof.py --full    # the full 400-sequence spec grid
 > ```
->
-**Representative exact-pose short-sweep grid** (3 sizes × 2 yaws × frames {6,8,10,12}
-× span {45,60,90,120}°, 96 sequences; `scripts/m9_cuboid_proof.py`):
 
-- accepted **96/96**; abs % error per dim **P50 0.34%, P90 2.00%, P95 4.27%** — the
-  **≤2% exact-pose P50 target passes** (the generic hull did not). Max 30% is a
-  single small-parcel dimension (fewest pixels at the small benchmark image); median
-  by size: medium 0.25%, real 0.34%, small parcel 1.33%; by yaw: 0° 0.41%, 45° 0.29%.
-- **minimum viable sweep** (all dims ≤2%): **6 frames over 45°** — a realistic
-  hand-held pass, not an orbit.
+**Aggregate:** accepted **303/400 (75.7%)**. Acceptance by gate stage (GT-free):
+optimizer-converged 396, silhouette 399, identifiability 384, leave-one-out 310,
+**final metric 303**.
 
-**Visual hull vs cuboid fit on the *same* short sweeps** (err % L/W/H):
+**Per-dimension `|error %|` over accepted sequences:**
+
+| dim | P50 | P90 | P95 | max |
+|---|---|---|---|---|
+| length | 0.29 | 2.0 | 3.0 | 25.12 |
+| width  | 0.34 | 2.0 | 2.0 | 14.17 |
+| height | 0.20 | 0.83 | 0.86 | 6.40 |
+| pooled | 0.33 | 2.0 | 2.0 | 25.12 |
+
+- **The per-dimension median ≤ 2% research gate PASSES** (median |L| 0.29%, |W|
+  0.34%, |H| 0.20% — each independently ≤ 2%). Median `|err%|` by size: large 0.20,
+  medium 0.17, real 0.34, tall-narrow 0.25, **small parcel 1.33** (the small parcel
+  at the 200 px grid image is the worst); by yaw: 0° 0.34, 20° 0.34, 45° 0.29, 70° 0.40.
+- **The preferred P95 ≤ 5% per dimension holds pooled**, but **not uniformly across
+  every capture configuration** (see the viable-sweep table — some narrow/few-frame
+  groups blow past it).
+
+**Research false accepts (the gate is NOT perfect).** GT is used only by the
+evaluator here. Of the 303 accepted sequences: **15 have a dimension error > 5%, 4 >
+10%, and 1 > 20%** (worst accepted error **25.12%** — the small parcel at 200 px, a
+resolution artifact). **So the quality gates do NOT catch every large synthetic
+error.** The honest claim is *"most large errors are rejected"*, not *"bad results
+are never silently accepted"*.
+
+**Robustly viable capture configurations.** Grouping every `(frames, span)` across
+all sizes and yaws, a configuration is viable only if the **whole group** is 100%
+accepted, has 0 false accepts, and P95 ≤ 5% per dimension. **The only robustly viable
+sweep is 8 frames over 120°** (the previous "6 frames / 45°" claim was a single lucky
+row, not a grouped result). Narrower/fewer-frame sweeps have lower acceptance and
+occasional large errors.
+
+**Visual hull vs cuboid fit on the *same* short sweeps** (err % L/W/H) — the carton
+prior removes the hull's length over-estimate on exactly the captures that defeat it:
 
 | frames | span | visual hull | cuboid fit |
 |---|---|---|---|
-| 8  | 45°  | **+120 / +17 / +25** | +0.3 / −0.3 / −0.4 |
+| 8  | 45°  | **+120 / +17 / +25** | −0.3 / −0.3 / 0.0 |
 | 10 | 60°  | **+99 / +9 / +22**   | 0.0 / −0.3 / −0.4 |
 | 10 | 90°  | **+66 / +12 / +20**  | −0.3 / −0.3 / 0.0 |
 | 12 | 120° | **+29 / +11 / +18**  | 0.0 / −0.3 / −0.4 |
 
-The carton prior removes the hull's length over-estimate on exactly the captures
-that defeat it.
+**6-DOF support-plane vs 7-DOF free fit.** Both recover to ~0.4% on 10f/90° and
+12f/120°; on an 8f/60° sweep the 6-DOF plane fit failed (`cuboid_fit_failed`, did not
+converge) while the 7-DOF free fit succeeded. **MeasureX does not strictly require a
+detected support plane** — the free fit is at least as robust on these sweeps.
 
+**Image-resolution sensitivity (200 / 480 / 960 px, FOV held constant).** This is the
+cause of the large small-parcel errors:
+
+| case | 200 px (bbox, err%, ±1px unc mm) | 480 px | 960 px |
+|---|---|---|---|
+| small parcel | bbox 27, L −1.5/W −2.0, unc 11.5/9.5/4.5 | bbox 67, ≤0.5%, unc 5.0/4.5/2.0 | bbox 133, 0%, unc 2.5/2.0/1.0 |
+| real carton  | bbox 56, ≤0.3%, unc 10.5/9.0/5.0 | bbox 133, 0%, unc 4.5/3.5/2.0 | bbox 266, ≤0.6%, unc 2.5/2.0/1.0 |
+| tall narrow  | bbox 35, ≤0.8%, unc 11/13.5/6.5 | bbox 85, 0%, unc 4.5/6.0/2.5 | bbox 170, ≤0.4%, unc 2.0/3.0/1.5 |
+
+The **GT-free ±1 px quantisation uncertainty** (perturb each silhouette by ±1 px,
+refit) falls ~4–5× from 200→960 px and tracks the true error — a real observability
+diagnostic for deciding when a projected object is too small to measure (hence the
+optional `insufficient_image_resolution` gate). The 200 px small-parcel case is the
+25% outlier's origin; the algorithm was **not** changed to fit it.
+
+- **Support-plane error sensitivity** (poses exact): plane **offset** 1/3/5/10 mm →
+  max dim error 0.6/1.2/1.6/**3.7**% (H is the most affected, as expected — it is
+  measured from the plane). Plane **tilt** 0.1/0.25/0.5/1.0/2.0° → 0.3/0.6/0.3/0.7/**2.3**%.
+- **Metric-pose scale bias** (correlated, NOT compensated): a ±0.5/1/2% scale on all
+  camera translations propagates **~1:1** into dimensions (−2% → −2.0…−2.4%; +2% →
+  +1.7…+2.0%). This defines the accuracy requirement for the future metric-pose
+  provider: its metric scale must be good to ≈ the target dimensional tolerance.
+- **Realistic trajectory variation** (non-uniform spacing, radial/elevation/lateral
+  jitter, aim off-centre, and all combined — poses known exactly): every variant
+  stays at 0.3–0.4% max error, i.e. unchanged from the ideal arc. The fitter consumes
+  the real poses; it does not rely on a smooth centred orbit.
 - **Mask-error robustness:** clean / undersized / shifted / one-missing frame all
-  recovered to ≤0.4%; an oversized or heavily-noisy mask is **rejected typed**
-  (`insufficient_silhouette_consistency`) — never a silently-wrong dimension.
-- **Pose-noise degradation** (reported separately from exact-pose): rotation
-  0.1→1.0° → max dim error 0.3→2.4%; translation 1→10 mm → 0.4→1.2%. This is the
-  pose quality a future ARCore/ARKit/VIO source would need to meet.
+  recovered to ≤0.4%; an **oversized or heavily-noisy** mask is **rejected typed**
+  (`insufficient_silhouette_consistency`).
+- **Pose-noise degradation** (reported separately from exact-pose): rotation 0.1→1.0°
+  → max dim error 0.3→2.4%; translation 1→10 mm → 0.4→1.7%. This is the pose quality a
+  future ARCore/ARKit/VIO source would need to meet.
+- Metric-scale equivariance still holds (2× scene + 2× camera translations → 2.00×
+  dimensions).
 
 ### Honest scope
 
-The cuboid fit is a **synthetic exact-mask / exact-pose** proof. It shows the carton
-prior removes the short-sweep under-constraint that defeats a generic hull; it does
-**not** yet prove real-device accuracy. No ground truth enters the fit, no correction
-multiplier is applied, and no threshold is tuned to a carton. Real-capture validation
-(masks from SAM 2, metric poses from ARCore/ARKit VIO) remains the pending gate — see
-the ARCore/ARKit boundary note above. PR #20 is not merged and M8 is unchanged.
+The cuboid fit is a **synthetic exact-mask / exact-pose** proof. The masks are
+generated from the **same ideal cuboid camera model the fitter optimises**, so this
+is a mathematical / implementation proof — it is **not** evidence of real-world
+segmentation accuracy, and it does **not** show the warehouse workflow is ready. No
+ground truth enters the fit, no correction multiplier is applied, and no threshold is
+tuned to a carton.
+
+What it does and does not establish, honestly:
+
+- **Does:** given exact metric poses and exact masks, the carton prior removes the
+  generic hull's short-sweep length over-estimate (≈+100% → ≈0%); the per-dimension
+  median error is ≤ 2%; mask/pose/plane/scale/trajectory perturbations behave as a
+  correct geometry would; metric scale comes only from the poses.
+- **Does not:** it does not prove real-device accuracy, and **the quality gates are
+  not a guarantee** — on the full grid 15 accepted sequences still exceeded 5% error
+  (one 25%), driven mainly by low image resolution on the smallest parcel. A real
+  deployment needs adequate resolution (≥ ~480 px object projection here), a robust
+  capture configuration (only 8f/120° was robustly viable across all sizes/yaws), and
+  metric-pose scale good to ≈ the target tolerance (scale bias propagates ~1:1).
+
+Real-capture validation (masks from SAM 2, metric poses from ARCore/ARKit VIO)
+remains the pending gate — see the ARCore/ARKit boundary note above. PR #20 is not
+merged and M8 is unchanged.

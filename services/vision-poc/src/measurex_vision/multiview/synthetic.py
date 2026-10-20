@@ -88,6 +88,14 @@ def synthetic_capture(
     gravity_world: tuple[float, float, float] = (0.0, 1.0, 0.0),
     scale: float = 1.0,
     pose_noise_deg: float = 0.0,
+    # Realistic trajectory variation (Phase T). The poses stay KNOWN EXACTLY — these
+    # only make the ideal arc less ideal, so the fitter must consume the real poses
+    # instead of assuming a smooth centred orbit. All default to 0 (the ideal arc).
+    distance_jitter_frac: float = 0.0,   # radial distance ±frac (non-constant range)
+    elevation_jitter_deg: float = 0.0,   # per-frame elevation wobble
+    azimuth_jitter_deg: float = 0.0,     # non-uniform azimuth spacing
+    lateral_jitter_m: float = 0.0,       # sideways/path jitter of the eye (metres)
+    aim_jitter_m: float = 0.0,           # look-at target offset from the object centre
     seed: int = 0,
 ) -> tuple[CaptureBundle, dict]:
     """Build an in-memory synthetic capture bundle and its ground-truth dims.
@@ -132,13 +140,22 @@ def synthetic_capture(
         view_angles = list(zip(ramp.tolist(), azimuths.tolist(), strict=True))
     else:
         view_angles = [(e, a) for e in elevations_deg for a in azimuths]
+    traj_rng = np.random.default_rng(seed + 777)
     for i, (elevation_deg, az_deg) in enumerate(view_angles):
-        elev = np.radians(elevation_deg)
-        az = np.radians(az_deg)
+        elev = np.radians(elevation_deg + elevation_jitter_deg * traj_rng.standard_normal())
+        az = np.radians(az_deg + azimuth_jitter_deg * traj_rng.standard_normal())
         horiz = np.cos(az) * a0 + np.sin(az) * b0
         direction = np.cos(elev) * horiz + np.sin(elev) * up
-        eye = centre + dist * direction
-        T = look_at_pose(eye, centre, up)
+        dist_i = dist * (1.0 + distance_jitter_frac * traj_rng.standard_normal())
+        eye = centre + dist_i * direction
+        if lateral_jitter_m > 0:
+            # offset the eye within the plane perpendicular to the view direction
+            side = np.cross(direction, up)
+            side /= max(np.linalg.norm(side), 1e-9)
+            eye = eye + lateral_jitter_m * scale * (traj_rng.standard_normal() * side
+                                                    + traj_rng.standard_normal() * up)
+        target = centre + (aim_jitter_m * scale * traj_rng.standard_normal(3) if aim_jitter_m > 0 else 0.0)
+        T = look_at_pose(eye, target, up)
         if pose_noise_deg > 0:
             T[:3, :3] = _small_rotation(seed + i, pose_noise_deg) @ T[:3, :3]
         P = cam.projection_matrix(intr, T)

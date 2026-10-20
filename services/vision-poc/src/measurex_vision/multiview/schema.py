@@ -51,6 +51,9 @@ class FailureCode(str, Enum):
     CUBOID_FIT_FAILED = "cuboid_fit_failed"
     AMBIGUOUS_CUBOID_FIT = "ambiguous_cuboid_fit"
     UNSTABLE_CUBOID_FIT = "unstable_cuboid_fit"
+    # The projected object is too small (too few mask pixels) to support a reliable
+    # metric dimension — image-space quantisation dominates (see cuboid_fit.py).
+    INSUFFICIENT_IMAGE_RESOLUTION = "insufficient_image_resolution"
 
 
 class MetricReconstructionError(Exception):
@@ -129,20 +132,34 @@ class ViewFrame:
 
 
 def canonical_support_plane(support_plane: dict[str, Any] | None, up: np.ndarray) -> dict[str, Any] | None:
-    """Return the support plane with its normal oriented toward gravity-``up``.
+    """Return the support plane in one canonical ``(normal, offset)`` representation.
 
-    The same geometric plane has two ``(normal, offset)`` encodings. Downstream
-    signed half-space tests ("is this point above the plane?") depend on which one
-    they receive, so M9 fixes one convention: **the normal points toward
-    gravity-up**. If the supplied normal points the other way, flip both the normal
-    and the offset (same plane, opposite labelled side)."""
+    A plane ``n·X + d = 0`` is scale-free: ``(n, d)`` and ``(k·n, k·d)`` describe the
+    **same** physical plane. M9 fixes one representation so every downstream signed
+    half-space test ("is this point above the plane?") agrees:
+
+    1. **Unit normal, matched offset** — divide both ``n`` and ``d`` by ``||n||`` so
+       ``||n_unit|| = 1`` and ``d_unit = d / ||n||`` keeps the same plane. (Dividing
+       only the normal would move the plane; the offset must scale by the same
+       factor.)
+    2. **Normal toward gravity-up** — if ``n_unit`` points the other way, flip both
+       ``n_unit`` and ``d_unit`` (same plane, opposite labelled side).
+
+    After this the normal is a unit vector facing up and the offset is correctly
+    scaled for it. A non-finite or zero-length normal is left untouched for the
+    validator to reject."""
     if support_plane is None or "normal" not in support_plane or "offset" not in support_plane:
         return support_plane
     n = np.asarray(support_plane["normal"], dtype=float)
+    norm = float(np.linalg.norm(n))
     offset = float(support_plane["offset"])
-    if float(n @ up) < 0.0:
-        n, offset = -n, -offset
-    return {**support_plane, "normal": [float(x) for x in n], "offset": offset}
+    if n.shape != (3,) or not np.isfinite(norm) or norm < 1e-12 or not np.isfinite(offset):
+        return support_plane
+    n_unit = n / norm
+    d_unit = offset / norm
+    if float(n_unit @ up) < 0.0:
+        n_unit, d_unit = -n_unit, -d_unit
+    return {**support_plane, "normal": [float(x) for x in n_unit], "offset": d_unit}
 
 
 @dataclass(frozen=True)
@@ -239,9 +256,10 @@ def validate_bundle(bundle: CaptureBundle, config: ReconstructionConfig) -> None
 def _validate_support_plane(support_plane: dict[str, Any] | None, up: np.ndarray) -> None:
     """Validate an optional metric support plane ``{normal, offset}`` (world
     metres). The normal must be a finite, non-zero 3-vector and the offset finite.
-    Allowed orientation: the plane is roughly horizontal, so its normal is within
-    45° of "up" (either sign) — a carton rests on it. A wildly tilted plane is a
-    capture/units bug, not a floor, and is rejected."""
+    The bundle has already run :func:`canonical_support_plane`, so the normal is a
+    unit vector **oriented toward gravity-up**; a valid floor therefore has its
+    normal within 45° of up. A wildly tilted plane is a capture/units bug, not a
+    floor, and is rejected."""
     if support_plane is None:
         return
     if "normal" not in support_plane or "offset" not in support_plane:
@@ -254,7 +272,7 @@ def _validate_support_plane(support_plane: dict[str, Any] | None, up: np.ndarray
         raise MetricReconstructionError(
             FailureCode.INVALID_SUPPORT_PLANE, f"support_plane.offset not finite: {offset}"
         )
-    if abs(float(n @ up)) < np.cos(np.radians(45.0)):
+    if float(n @ up) < np.cos(np.radians(45.0)):
         raise MetricReconstructionError(
             FailureCode.INVALID_SUPPORT_PLANE,
             f"support plane normal {n} is >45 deg from gravity-up {up} (not a floor)",
