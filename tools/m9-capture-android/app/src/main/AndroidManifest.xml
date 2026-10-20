@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <uses-permission android:name="android.permission.CAMERA" />
+
+    <!-- AR is OPTIONAL at install: the app must still install on a non-certified
+         device (e.g. the Samsung A16 4G) so it can show the blocking "metric pose
+         unavailable" message instead of failing to install. Runtime availability is
+         checked explicitly at launch; the app never falls back to monocular depth. -->
+    <uses-feature android:name="android.hardware.camera.ar" android:required="false" />
+
+    <application
+        android:allowBackup="false"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.M9Capture">
+
+        <!-- "optional": do not block install on devices without ARCore. -->
+        <meta-data android:name="com.google.ar.core" android:value="optional" />
+
+        <activity
+            android:name=".CaptureActivity"
+            android:configChanges="orientation|screenSize|keyboardHidden"
+            android:exported="true"
+            android:screenOrientation="portrait">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+    </application>
+</manifest>
