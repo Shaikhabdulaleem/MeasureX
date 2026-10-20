@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """Evaluate M9 real-capture run results against tape-measured ground truth.
 
 This is the **only** tool that reads ``ground_truth.json``. The measurement and

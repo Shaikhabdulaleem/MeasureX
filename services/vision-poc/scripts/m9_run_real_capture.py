@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """Run the M9 cuboid fit on a prepared strict ``capture.json`` (one sweep).
 
 Runs both configurations independently and never chooses between them from

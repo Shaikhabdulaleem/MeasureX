@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """Select exactly 8 frames from an M9 ``raw_capture.json`` candidate pool.
 
 Selection is ground-truth-free: it uses only the exported guidance target and the

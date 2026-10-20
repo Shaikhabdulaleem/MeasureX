@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """Validate an M9 real-device ``raw_capture.json`` before any segmentation.
 
 Checks the raw schema, that images exist, that poses are finite proper rigid

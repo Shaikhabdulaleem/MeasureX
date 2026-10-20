@@ -1,4 +1,3 @@
-#!/usr/bin/env python
 """Prepare a strict M9 ``capture.json`` from a raw capture + selected 8 frames.
 
 Runs the existing M8 segmentation components on each selected frame — Grounding
