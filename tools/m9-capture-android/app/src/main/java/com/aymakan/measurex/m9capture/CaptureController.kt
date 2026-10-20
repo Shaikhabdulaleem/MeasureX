@@ -20,7 +20,12 @@ class CaptureController(
     val minCoverageDeg: Double = 120.0,
     val targetCoverageDeg: Double = 125.0,
 ) {
-    data class Candidate(val cameraCenter: DoubleArray, val azimuthDeg: Double, val baselineFromPrevM: Double)
+    data class Candidate(
+        val cameraCenter: DoubleArray,
+        val azimuthDeg: Double,
+        val baselineFromPrevM: Double,
+        val frameId: String = "",
+    )
 
     private val candidates = mutableListOf<Candidate>()
     private var lastAzimuth: Double? = null
@@ -44,12 +49,24 @@ class CaptureController(
         separationFromLast(cameraCenter) >= minAngularSeparationDeg
 
     /** Record a candidate; returns its azimuth. The caller has already decided to save. */
-    fun accept(cameraCenter: DoubleArray): Double {
+    fun accept(cameraCenter: DoubleArray, frameId: String = ""): Double {
         val az = PoseConvention.azimuthDeg(cameraCenter, target, gravityWorld)
         val baseline = candidates.lastOrNull()?.let { distance(it.cameraCenter, cameraCenter) } ?: 0.0
-        candidates.add(Candidate(cameraCenter.copyOf(), az, baseline))
+        candidates.add(Candidate(cameraCenter.copyOf(), az, baseline, frameId))
         lastAzimuth = az
         return az
+    }
+
+    /**
+     * Drop the candidate for [frameId] — used when its JPEG write failed, so a failed
+     * frame never counts toward coverage/completion and can be replaced by a later
+     * viewpoint. `lastAzimuth` is restored to the surviving tail so separation gating
+     * stays correct.
+     */
+    fun remove(frameId: String) {
+        if (candidates.removeAll { it.frameId == frameId }) {
+            lastAzimuth = candidates.lastOrNull()?.azimuthDeg
+        }
     }
 
     /** Total camera travel across candidates (metres). */
@@ -58,7 +75,12 @@ class CaptureController(
     /** View coverage: the contiguous arc the candidates span (`360 - largest gap`). */
     fun coverageDeg(): Double = coverageDeg(azimuths)
 
-    fun isComplete(): Boolean = count >= minCandidates && coverageDeg() >= minCoverageDeg
+    /**
+     * On-device completion. Requires [minCandidates] frames across [targetCoverageDeg]
+     * — a small margin above the offline research minimum ([minCoverageDeg], still the
+     * only gate the offline validator enforces) so frame selection has slack.
+     */
+    fun isComplete(): Boolean = count >= minCandidates && coverageDeg() >= targetCoverageDeg
 
     companion object {
         /** Angular extent spanned by azimuths on the circle: `360 - largest gap`. */

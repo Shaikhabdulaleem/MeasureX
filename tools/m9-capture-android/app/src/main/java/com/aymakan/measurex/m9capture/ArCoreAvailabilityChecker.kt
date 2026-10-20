@@ -21,8 +21,20 @@ object ArCoreAvailabilityChecker {
         data object SupportedApkTooOld : State
         /** This device cannot run ARCore — metric pose is impossible here. */
         data object UnsupportedDevice : State
-        /** Still determining support (ARCore may query the Play Store asynchronously). */
+        /** ARCore is still querying support asynchronously — recheck shortly. */
         data object UnknownChecking : State
+        /** The availability query errored or timed out — treat as blocked, not "checking". */
+        data object CheckError : State
+    }
+
+    /** What the launch flow should do next for a given availability [State]. */
+    enum class StartupAction {
+        /** Support/install is known — continue into the session/install flow. */
+        PROCEED,
+        /** Support is still being determined — show a message and recheck later. */
+        RECHECK,
+        /** ARCore cannot run (unsupported, or the check errored/timed out) — block. */
+        BLOCK,
     }
 
     /** One synchronous reading of [ArCoreApk.checkAvailability]. */
@@ -31,16 +43,27 @@ object ArCoreAvailabilityChecker {
         ArCoreApk.Availability.SUPPORTED_NOT_INSTALLED -> State.SupportedNotInstalled
         ArCoreApk.Availability.SUPPORTED_APK_TOO_OLD -> State.SupportedApkTooOld
         ArCoreApk.Availability.UNSUPPORTED_DEVICE_NOT_CAPABLE -> State.UnsupportedDevice
-        ArCoreApk.Availability.UNKNOWN_CHECKING,
+        ArCoreApk.Availability.UNKNOWN_CHECKING -> State.UnknownChecking
         ArCoreApk.Availability.UNKNOWN_ERROR,
-        ArCoreApk.Availability.UNKNOWN_TIMED_OUT -> State.UnknownChecking
+        ArCoreApk.Availability.UNKNOWN_TIMED_OUT -> State.CheckError
     }
 
     /** True when metric capture may proceed. */
     fun isReady(state: State): Boolean = state is State.SupportedInstalled
 
-    /** True when the device fundamentally cannot run ARCore (show the blocking message). */
-    fun isBlocked(state: State): Boolean = state is State.UnsupportedDevice
+    /** True when ARCore cannot run (show the blocking message). */
+    fun isBlocked(state: State): Boolean = state is State.UnsupportedDevice || state is State.CheckError
+
+    /**
+     * Pure launch decision: proceed into the session/install flow, recheck shortly
+     * (support still unknown), or block. A still-"checking" state must not request
+     * install as if support were already known; a hard error/timeout blocks cleanly.
+     */
+    fun startupAction(state: State): StartupAction = when (state) {
+        is State.UnsupportedDevice, is State.CheckError -> StartupAction.BLOCK
+        is State.UnknownChecking -> StartupAction.RECHECK
+        else -> StartupAction.PROCEED
+    }
 
     /**
      * Follow the official install/update flow for an installable device. Returns the

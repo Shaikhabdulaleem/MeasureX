@@ -309,9 +309,12 @@ def _validate_support_plane(sp: dict[str, Any] | None, up: np.ndarray) -> tuple[
     norm = float(np.linalg.norm(n))
     if n.shape != (3,) or not np.isfinite(norm) or norm < 1e-6 or not np.isfinite(float(sp["offset"])):
         return False, f"support_plane normal/offset not finite: {sp}"
+    # The Android raw contract guarantees the normal is already oriented gravity-up,
+    # so require it (not abs): a downward-facing normal is a sign/convention bug and
+    # must fail here, even though the strict loader may still canonicalise defensively.
     cos = float((n / norm) @ up)
-    if abs(cos) < np.cos(np.radians(45.0)):
-        return False, f"support plane normal {list(n)} is >45 deg from gravity-up {list(up)}"
+    if cos < np.cos(np.radians(45.0)):
+        return False, f"support plane normal {list(n)} is not within 45 deg of gravity-up {list(up)}"
     return True, f"floor normal·up={cos:.3f}"
 
 

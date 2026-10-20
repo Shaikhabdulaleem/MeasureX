@@ -120,3 +120,26 @@ jobs:
 
       - name: Test
         run: pytest
+
+  m9-android:
+    name: Build & test (M9 capture, Android)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tools/m9-capture-android
+    steps:
+      - uses: actions/checkout@v4
+
+      # compileSdk 36 needs JDK 17 (AGP 9 minimum).
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      # Proves the coordinate tests pass, the app compiles, and a debug APK assembles.
+      # The APK is a CI build artefact only — not uploaded (repo policy publishes none).
+      - name: Unit tests + assemble debug APK
+        run: ./gradlew :app:testDebugUnitTest :app:assembleDebug --no-daemon

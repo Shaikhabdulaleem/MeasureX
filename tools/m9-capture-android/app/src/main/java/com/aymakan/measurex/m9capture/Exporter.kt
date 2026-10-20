@@ -36,6 +36,12 @@ object Exporter {
     fun frameFile(sessionDir: File, frameId: String): File =
         File(File(sessionDir, "frames"), "$frameId.jpg")
 
+    /** True iff every referenced frame's JPEG exists on disk and is non-empty. The
+     *  final guard before manifest/ZIP so a capture never references an image that was
+     *  not completely written. */
+    fun allFramesPresent(sessionDir: File, frameIds: List<String>): Boolean =
+        frameIds.all { frameFile(sessionDir, it).let { f -> f.isFile && f.length() > 0L } }
+
     fun writeText(file: File, text: String) {
         file.writeText(text, Charsets.UTF_8)
     }

@@ -113,9 +113,14 @@ For every saved frame the intrinsics are the **CPU image** intrinsics
 (`Camera.getImageIntrinsics()`), never the GPU texture intrinsics. The saved JPEG is
 the camera's **native pixel orientation** — **no rotate, no mirror, no crop, no
 resize** — so stored `width/height/fx/fy/cx/cy` describe exactly the saved pixels.
-The preview may be rotated for the user independently. `display_rotation` /
-`sensor_orientation`-type fields are kept in diagnostics only. YUV_420_888 → RGB
-respects each plane's `rowStride`/`pixelStride` (`YuvToRgb.kt`).
+The preview may be rotated for the user independently. As a runtime guard the app
+rejects any candidate whose CPU image grid (`image.width/height`) does not equal its
+intrinsics grid (`imageDimensions`) and counts it in `rejected_dim_mismatch` — a
+cheap trap for a native orientation/rotation bug. `diagnostics.json` records
+orientation context only: `display_rotation`, CPU image and intrinsics width/height,
+`camera_id` and `sensor_orientation_deg` (the chosen physical camera's sensor
+mounting rotation when the platform exposes it, else `null` — never fabricated).
+YUV_420_888 → RGB respects each plane's `rowStride`/`pixelStride` (`YuvToRgb.kt`).
 
 ## Camera config
 
@@ -148,21 +153,47 @@ whose delta exceeds 5 ms is rejected rather than pairing a pose with the wrong i
 
 A candidate is saved only when tracking state is `TRACKING`, a new CPU image is
 available, timestamps are paired, and the viewpoint is ≥ ~8° from the previous
-candidate (so near-duplicate views are not repeated). The sweep targets **12–20
-candidates across ≥120° coverage** (start ~60° to one side, move smoothly across the
-front, finish ~60° on the other side; keep the whole carton visible; never walk
-behind it). The app shows tracking status, candidate count, coverage, progress and
-instructions — and **never** displays an estimated dimension.
+candidate (so near-duplicate views are not repeated).
+
+On-device completion requires **≥ 12 candidates across ≥ 125° coverage**
+(`targetCoverageDeg`) — a deliberate margin above the **120° offline research
+minimum** that the raw validator and frame selector still enforce, so selection has
+slack without moving the research gate. Sweep 12–20 candidates (start ~60° to one
+side, move smoothly across the front, finish ~65° on the other side; keep the whole
+carton visible; never walk behind it). The app shows tracking status, candidate
+count, coverage, progress and instructions — and **never** displays an estimated
+dimension.
+
+## New sweep = new ARCore session
+
+**NEW SWEEP** really recreates the session: the old `Session` is paused, closed and
+replaced with a freshly created and configured one (new `session_id`, recorded in
+`diagnostics.json` with `sweep_index`), on the GL thread. The three sweeps therefore
+initialise VIO — world origin and metric scale — independently; poses are never
+averaged across sessions.
 
 ## Target / support anchor
 
 The user aims a centre reticle at the carton base and taps **SET CARTON TARGET**; an
-ARCore hit test creates an anchor used only for sweep guidance and view-angle maths —
-it imposes no carton dimensions. If the hit is on a `HORIZONTAL_UPWARD_FACING` plane,
-that plane is also exported as the optional metric `support_plane` (`normal · X +
-offset = 0`, unit normal oriented gravity-up, `offset = -normal·P`, world metres). A
+ARCore hit test creates a real `Anchor` used only for sweep guidance and view-angle
+maths — it imposes no carton dimensions. The anchor is detached on NEW SWEEP and on
+exit. `guidance_target_world` is the anchor's pose sampled on the render thread at
+the latest tracked frame before EXPORT, in the same world frame as the camera poses.
+If the hit is on a `HORIZONTAL_UPWARD_FACING` plane, that plane is also exported as
+the optional metric `support_plane` (`normal · X + offset = 0`, unit normal oriented
+gravity-up, `offset = -normal·P`, world metres); the raw validator requires
+`normal · up ≥ cos 45°`, so a downward (sign-flipped) normal fails fast. A
 feature-point-only hit is a guidance target but **not** a support plane. The support
 plane never supplies metric scale — scale is from the camera-pose translations.
+
+## Export waits for completed image writes
+
+JPEG compression runs off the GL thread, so EXPORT must not race it. Every accepted
+candidate's write is tracked; **EXPORT stays disabled while any write is pending or a
+referenced image failed**, and the `raw_capture.json` / ZIP are written only after a
+final check that every referenced frame exists on disk and is non-empty. A failed
+write is dropped from both the manifest and the capture controller (so it is never a
+valid manifest frame) and capture re-opens to replace it with another candidate.
 
 ## Offline frame selection
 
@@ -262,8 +293,10 @@ python scripts/m9_evaluate_real_results.py ground_truth.json \
 4. Aim the centre reticle at the carton/table centre and tap **SET CARTON TARGET**.
 5. Start ~60° to one side; sweep smoothly around the front; finish ~60° on the other side.
 6. Keep the whole carton visible; do not walk behind it.
-7. Let the app reach ≥120° coverage and ≥12 candidate frames, then **EXPORT CAPTURE**.
-8. Tap **NEW SWEEP** and repeat for 3 independent sessions (`sweep_01/02/03`).
+7. Let the app reach ≥125° coverage and ≥12 candidate frames, then **EXPORT CAPTURE**
+   (EXPORT stays disabled until all image writes have finished).
+8. Tap **NEW SWEEP** (a fresh ARCore session) and repeat for 3 independent sessions
+   (`sweep_01/02/03`).
 
 ## Limitations
 

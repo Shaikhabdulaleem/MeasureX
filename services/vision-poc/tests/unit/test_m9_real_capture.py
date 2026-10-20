@@ -172,6 +172,18 @@ def test_raw_support_plane_optional(tmp_path):
     assert report["support_plane_present"] is False
 
 
+def test_raw_rejects_downward_support_plane_normal(tmp_path):
+    # The raw contract promises a gravity-up normal; a flipped (downward) sign is a
+    # convention bug and must fail raw validation, not be silently accepted.
+    p = _build_raw_dir(tmp_path, with_plane=True)
+    doc = json.loads(p.read_text())
+    n = doc["support_plane"]["normal"]
+    doc["support_plane"]["normal"] = [-v for v in n]  # point it at the ground
+    p.write_text(json.dumps(doc))
+    report = validate_raw_capture(load_raw_capture(str(p)), base_dir=str(tmp_path))
+    assert any(c["check"] == "support_plane_valid" and not c["ok"] for c in report["checks"])
+
+
 # --------------------------------------------------------------------------- #
 # Coverage + 8-frame selection
 # --------------------------------------------------------------------------- #
