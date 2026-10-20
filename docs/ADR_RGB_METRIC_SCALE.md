@@ -82,6 +82,13 @@ Guided capture:
 **Gate:** the M9 spike must first prove metric-scale recovery on known test objects
 **before** any Flutter workflow integration.
 
+**Implementation (offline research spike):** a multi-view **visual-hull** metric
+reconstruction — scale from metric camera poses, not monocular priors — is
+implemented in [`services/vision-poc/src/measurex_vision/multiview`](../services/vision-poc/src/measurex_vision/multiview/)
+and documented in
+[`services/vision-poc/docs/M9_MULTIVIEW_METRIC_SPIKE.md`](../services/vision-poc/docs/M9_MULTIVIEW_METRIC_SPIKE.md).
+It does not change this ADR's M8 conclusion and is not wired into production.
+
 ## Preserved future geometry change (not implemented here)
 
 The current **unconstrained PCA/OBB is deprecated for real captures** — it is

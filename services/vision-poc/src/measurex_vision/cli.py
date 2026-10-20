@@ -186,13 +186,47 @@ def _run_video(args) -> int:
     return 0 if isinstance(outcome, MeasurementSuccess) else 2
 
 
+def _run_multiview(args) -> int:
+    """M9 offline multi-frame metric reconstruction from a capture.json manifest."""
+    from .multiview import (
+        OfflineManifestProvider,
+        ReconstructionConfig,
+        reconstruct_from_provider,
+    )
+
+    overrides: dict = {}
+    if args.coarse_voxel is not None:
+        overrides["coarse_voxel_m"] = args.coarse_voxel
+    if args.fine_voxel is not None:
+        overrides["fine_voxel_m"] = args.fine_voxel
+    if args.no_leave_one_out:
+        overrides["leave_one_out"] = False
+    config = ReconstructionConfig(**overrides)
+
+    result = reconstruct_from_provider(
+        OfflineManifestProvider(args.manifest),
+        config,
+        debug_dir=args.output if args.debug else None,
+    )
+    print(json.dumps(result, indent=2))
+    return 0 if result.get("success") else 2
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="measurex-vision",
         description="MeasureX camera-only shipment dimensioning (research POC).",
     )
     parser.add_argument("--version", action="version", version=f"measurex-vision {__version__}")
-    sub = parser.add_subparsers(dest="command", metavar="{image,video}")
+    sub = parser.add_subparsers(dest="command", metavar="{image,video,multiview}")
+
+    p_mv = sub.add_parser("multiview", help="M9 metric reconstruction from a capture.json bundle")
+    p_mv.add_argument("--manifest", required=True, help="path to capture.json")
+    p_mv.add_argument("--output", default="outputs/m9_run", help="debug artifact directory (with --debug)")
+    p_mv.add_argument("--debug", action="store_true", help="write measurement/diagnostics/PLY/PNG artifacts")
+    p_mv.add_argument("--coarse-voxel", type=float, default=None, help="coarse voxel size in metres")
+    p_mv.add_argument("--fine-voxel", type=float, default=None, help="fine voxel size in metres")
+    p_mv.add_argument("--no-leave-one-out", action="store_true", help="skip the LOO stability check")
 
     p_image = sub.add_parser("image", help="single-image L/W/H measurement")
     p_image.add_argument("path", help="path to the image file")
@@ -231,6 +265,8 @@ def main(argv: list[str] | None = None) -> int:
         return _run_image(args)
     if args.command == "video":
         return _run_video(args)
+    if args.command == "multiview":
+        return _run_multiview(args)
     parser.print_help()
     return 0
 
