@@ -136,8 +136,13 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      # Install exactly what compileSdk 36 needs. The action's default package set
+      # includes the obsolete `tools` package, which no longer exists in the SDK
+      # repository and fails the job ("Failed to find package 'tools'").
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: "platform-tools platforms;android-36 build-tools;36.0.0"
 
       # Proves the coordinate tests pass, the app compiles, and a debug APK assembles.
       # The APK is a CI build artefact only — not uploaded (repo policy publishes none).
