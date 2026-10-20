@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">M9 Capture</string>
+    <string name="blocked_message">Metric pose unavailable on this device.\nM9 metric capture cannot run.</string>
+    <string name="aim_then_tap">Aim the reticle at the carton base, then tap SET CARTON TARGET</string>
+    <string name="instr_set_target">Point at the table under the carton and set the target</string>
+    <string name="tracking_lost">Tracking lost — hold still, keep the carton in view</string>
+    <string name="move_around">Move left around the carton</string>
+    <string name="continue_around">Continue around the carton — move slowly</string>
+    <string name="coverage_reached">125° coverage reached — you can EXPORT</string>
+    <string name="checking_support">Checking ARCore support…</string>
+    <string name="frame_write_failed">A frame failed to save — keep moving to replace it</string>
+    <string name="export_wait_writes">Finishing image writes…</string>
+    <string name="new_sweep_wait_writes">Waiting for image writes…</string>
+    <string name="export_incomplete">Capture not ready to export</string>
+    <string name="capture_status">Frames: %1$d   Coverage: %2$d°   Tracking drops: %3$d</string>
+    <string name="arcore_error">ARCore error: %s</string>
+    <string name="exported_to">Exported to %s</string>
+    <string name="camera_required">Camera permission is required for capture</string>
+    <string name="set_target">SET CARTON TARGET</string>
+    <string name="export">EXPORT CAPTURE</string>
+    <string name="new_sweep">NEW SWEEP</string>
+</resources>
